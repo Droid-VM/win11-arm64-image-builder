@@ -54,7 +54,34 @@ Dism /Online /Cleanup-Image /StartComponentCleanup /ResetBase /Quiet
 Remove-Item -Recurse -Force "$env:WINDIR\Temp\*"      -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force "$env:WINDIR\SoftwareDistribution\Download\*" -ErrorAction SilentlyContinue
 
-# 7) 對釋放空間發 TRIM -> qemu(discard=unmap) 即時縮 qcow2，最後 convert 更小
+# 7) 停用 Windows Update（含會自動把 wuauserv 重開的 WaaSMedicSvc / UsoSvc），
+#    並在「USER 桌面」放 enable_windows_update.bat 讓使用者自己決定何時打開更新。
+Write-Host "[debloat] disable Windows Update"
+# wuauserv 用 sc 停用；WaaSMedicSvc 受保護只能改登錄檔 Start（4=disabled）
+& sc.exe stop wuauserv | Out-Null
+& sc.exe config wuauserv start= disabled | Out-Null
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" /v Start /t REG_DWORD /d 4 /f | Out-Null
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\UsoSvc"       /v Start /t REG_DWORD /d 4 /f | Out-Null
+New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Force | Out-Null
+New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name NoAutoUpdate -Value 1 -PropertyType DWord -Force | Out-Null
+
+$enableBat = @'
+@echo off
+>nul 2>&1 net session || (powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs" & exit /b)
+echo Re-enabling Windows Update...
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" /v Start /t REG_DWORD /d 3 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\UsoSvc"       /v Start /t REG_DWORD /d 2 /f >nul
+sc config wuauserv start= demand >nul
+sc start wuauserv >nul 2>&1
+echo Done. Windows Update re-enabled (a reboot is recommended).
+pause
+'@
+$desktop = Join-Path $env:USERPROFILE 'Desktop'   # build_runme.sh 的 USERNAME 帳號桌面（FirstLogon 以該帳號執行）
+New-Item -ItemType Directory -Force $desktop | Out-Null
+Set-Content -Path (Join-Path $desktop 'enable_windows_update.bat') -Value $enableBat -Encoding Ascii
+
+# 8) 對釋放空間發 TRIM -> qemu(discard=unmap) 即時縮 qcow2，最後 convert 更小
 Write-Host "[debloat] ReTrim free space"
 Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue
 
