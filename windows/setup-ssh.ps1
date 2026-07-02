@@ -1,10 +1,10 @@
 <#
-  setup-ssh.ps1 — 首次開機（以 USER，管理員身分）跑：
-    - 裝 OpenSSH Server：優先 arm64 .msi（一鍵裝好服務/host key/ACL/防火牆），其次 arm64 .zip（手動那套）
-    - authorized_keys -> C:\ProgramData\ssh\administrators_authorized_keys（管理員的金鑰路徑）+ 收緊 ACL
-    - 開 SSH(22) 與 RDP 防火牆（RDP 的 fDenyTSConnections 已由 build.ps1 離線設 0）
-  安裝檔與金鑰由 build.ps1 第 8c 步 staging 到 C:\DroidVM\；金鑰來源是環境變數 $SSH_PUBKEY。
-  沒有 OpenSSH 安裝檔時只設 RDP，不致命。
+  setup-ssh.ps1 — runs on first boot (as USER, with administrator privileges):
+    - Install OpenSSH Server: prefer the arm64 .msi (one-click installs service/host key/ACL/firewall), otherwise the arm64 .zip (the manual approach)
+    - authorized_keys -> C:\ProgramData\ssh\administrators_authorized_keys (the administrator key path) + tighten ACL
+    - Open the SSH(22) and RDP firewall (RDP fDenyTSConnections already set to 0 offline by build.ps1)
+  The installer and keys are staged to C:\DroidVM\ by step 8c of build.ps1; the key source is the environment variable $SSH_PUBKEY.
+  When no OpenSSH installer is present, only RDP is configured, which is not fatal.
 #>
 $ErrorActionPreference = 'Stop'
 
@@ -13,13 +13,13 @@ $zip = Get-ChildItem 'C:\DroidVM' -Filter '*.zip' -ErrorAction SilentlyContinue 
 $sshInstalled = $false
 
 if ($msi) {
-    # MSI 一鍵：裝二進位 + 註冊 sshd/ssh-agent 服務 + 產生 host key + 修 ACL + 建防火牆規則
+    # MSI one-click: install binaries + register sshd/ssh-agent services + generate host key + fix ACL + create firewall rule
     $p = Start-Process msiexec.exe -ArgumentList @('/i', "`"$($msi.FullName)`"", '/qn', '/norestart') -Wait -PassThru
-    if ($p.ExitCode -ne 0) { throw "msiexec 失敗 (exit $($p.ExitCode))" }
+    if ($p.ExitCode -ne 0) { throw "msiexec failed (exit $($p.ExitCode))" }
     $sshInstalled = $true
 }
 elseif ($zip) {
-    # ZIP 手動：解壓 -> install-sshd -> host key -> 修 ACL
+    # ZIP manual: extract -> install-sshd -> host key -> fix ACL
     $ex = 'C:\DroidVM\openssh-extracted'
     Expand-Archive $zip.FullName -DestinationPath $ex -Force
     $bin = Split-Path (Get-ChildItem $ex -Recurse -Filter sshd.exe | Select-Object -First 1).FullName
@@ -33,14 +33,14 @@ elseif ($zip) {
     $sshInstalled = $true
 }
 else {
-    Write-Host 'No OpenSSH installer staged (C:\DroidVM 無 msi/zip) -> 跳過 SSH，只設 RDP'
+    Write-Host 'No OpenSSH installer staged (no msi/zip in C:\DroidVM) -> skip SSH, configure RDP only'
 }
 
 if ($sshInstalled) {
     Set-Service sshd      -StartupType Automatic
     Set-Service ssh-agent -StartupType Automatic -ErrorAction SilentlyContinue
 
-    # 管理員帳號的金鑰不讀家目錄，而是 administrators_authorized_keys，且 ACL 必須只有 SYSTEM+Administrators
+    # An administrator account key is not read from the home directory but from administrators_authorized_keys, and the ACL must contain only SYSTEM+Administrators
     if (Test-Path 'C:\DroidVM\authorized_keys') {
         $ak = 'C:\ProgramData\ssh\administrators_authorized_keys'
         New-Item -ItemType Directory -Force (Split-Path $ak) | Out-Null
@@ -48,7 +48,7 @@ if ($sshInstalled) {
         icacls $ak /inheritance:r /grant 'Administrators:F' 'SYSTEM:F' | Out-Null
     }
 
-    # 確保 port 22 放行（MSI 通常自帶規則；用獨立名稱避免衝突/重複無害）
+    # Ensure port 22 is allowed (MSI usually ships its own rule; use a separate name to avoid conflicts / duplicates are harmless)
     if (-not (Get-NetFirewallRule -Name 'DroidVM-sshd' -ErrorAction SilentlyContinue)) {
         New-NetFirewallRule -Name 'DroidVM-sshd' -DisplayName 'OpenSSH Server (sshd) [DroidVM]' `
             -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
@@ -57,6 +57,6 @@ if ($sshInstalled) {
     Write-Host 'OpenSSH Server ready (port 22, auto-start).'
 }
 
-# ---- RDP 防火牆（fDenyTSConnections 已由 build.ps1 離線設 0）----
+# ---- RDP firewall (fDenyTSConnections already set to 0 offline by build.ps1) ----
 Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
 Write-Host 'RDP firewall enabled.'

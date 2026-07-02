@@ -50,44 +50,44 @@ $ROOT = Split-Path $HERE -Parent
 $cfgFile = Join-Path $HERE "config.ps1"
 if (Test-Path $cfgFile) { . $cfgFile }
 
-# --- 檔案類輸入解析：URL -> 下載到 files\ 再用；本地路徑 -> 直接用；zip -> 解壓到 files\（使用檔案的內部流程）---
+# --- File-type input resolution: URL -> download into files\ then use; local path -> use directly; zip -> extract into files\ (goes through the file handling flow) ---
 function Resolve-InputFile([string]$Src, [string]$SaveAs = "") {
     if ($Src -match '^https?://') {
         $files = Join-Path $ROOT "files"
         New-Item -ItemType Directory -Force $files | Out-Null
         if (-not $SaveAs) { $SaveAs = Split-Path ($Src -replace '\?.*$', '') -Leaf }
         $dst = Join-Path $files $SaveAs
-        if (Test-Path $dst) { Write-Host "[files] 已存在，略過下載: $dst" }
+        if (Test-Path $dst) { Write-Host "[files] already exists, skip download: $dst" }
         else {
-            Write-Host "[files] 下載 $Src -> $dst"
+            Write-Host "[files] download $Src -> $dst"
             Invoke-WebRequest -Uri $Src -OutFile "$dst.part" -UseBasicParsing
             Move-Item "$dst.part" $dst -Force
         }
         return $dst
     }
-    if (-not (Test-Path $Src)) { throw "找不到檔案: $Src" }
+    if (-not (Test-Path $Src)) { throw "file not found: $Src" }
     return $Src
 }
 
-# 驅動 zip/資料夾來源 -> 解壓後的「根目錄」。DRIVER_DIR / DRIVER_CERT 用 ZIP/ 前綴引用此根（對照 macOS）。
+# Driver zip/folder source -> the "root directory" after extraction. DRIVER_DIR / DRIVER_CERT reference this root via the ZIP/ prefix (mirrors macOS).
 function Resolve-ZipRoot([string]$Src) {
     $p = Resolve-InputFile $Src "gunyah-arm64-drivers.zip"
     if (Test-Path $p -PathType Container) { return $p }
     if ($p -like "*.zip") {
         $dir = Join-Path (Join-Path $ROOT "files") ([IO.Path]::GetFileNameWithoutExtension($p))
-        if (Test-Path $dir) { Write-Host "[files] 已解壓: $dir" }
-        else { Write-Host "[files] 解壓 $p -> $dir"; Expand-Archive $p -DestinationPath $dir -Force }
+        if (Test-Path $dir) { Write-Host "[files] already extracted: $dir" }
+        else { Write-Host "[files] extract $p -> $dir"; Expand-Archive $p -DestinationPath $dir -Force }
         return $dir
     }
-    throw "驅動來源不是資料夾也不是 zip: $p"
+    throw "driver source is neither a folder nor a zip: $p"
 }
 
-# 展開 DRIVER_DIR / DRIVER_CERT 開頭的 ZIP 前綴 -> zip 解壓根（對照 macOS 的 ${VAR/#ZIP/$ZIP}）。
-# 例：ZIP/drivers -> <root>\drivers；ZIP/DroidVM_Test.cer -> <root>\DroidVM_Test.cer；非 ZIP 前綴 -> 原樣。
+# Expand a leading ZIP prefix in DRIVER_DIR / DRIVER_CERT -> the zip extraction root (mirrors macOS's ${VAR/#ZIP/$ZIP}).
+# e.g.: ZIP/drivers -> <root>\drivers; ZIP/DroidVM_Test.cer -> <root>\DroidVM_Test.cer; non-ZIP prefix -> unchanged.
 function Expand-ZipToken([string]$Path, [string]$ZipRoot) {
     if (-not $Path) { return $Path }
     if ($Path -eq 'ZIP') { return $ZipRoot }
-    # 字串串接（不用 Join-Path，避免 'C:' 被當成 PSDrive 解析）；ZIP 後面的斜線統一成反斜線。
+    # String concatenation (not Join-Path, to avoid 'C:' being resolved as a PSDrive); normalize slashes after ZIP to backslashes.
     if ($Path -match '^ZIP[\\/](.*)$') { return ($ZipRoot.TrimEnd('\', '/') + '\' + ($Matches[1] -replace '/', '\')) }
     return $Path
 }
@@ -199,27 +199,27 @@ $DISK_MB     = if ($env:DISK_SIZE_MB){ [int]$env:DISK_SIZE_MB }elseif ($DISK_SIZ
 $OUT_QCOW    = if ($env:OUT_QCOW)    { $env:OUT_QCOW }         elseif ($OUT_QCOW)    { $OUT_QCOW }         else { Join-Path $ROOT "win11-droidvm-final.qcow2" }
 $LETTER_ESP  = if ($env:LETTER_ESP)  { $env:LETTER_ESP }       elseif ($LETTER_ESP)  { $LETTER_ESP }       else { Get-FreeDriveLetter }
 $LETTER_WIN  = if ($env:LETTER_WIN)  { $env:LETTER_WIN }       elseif ($LETTER_WIN)  { $LETTER_WIN }       else { Get-FreeDriveLetter @($LETTER_ESP) }
-# 驅動安裝清單/憑證（對照 macOS）：DRIVER_DIR=含各驅動子資料夾的目錄（ZIP/ = 驅動 zip 解壓根）；
-# DRIVER_INSTALL=只離線注入這幾個子資料夾(空=全部)；DRIVER_CERT=指定簽章憑證(空=從 .cat 自動萃取)。
+# Driver install list/cert (mirrors macOS): DRIVER_DIR=directory containing the per-driver subfolders (ZIP/ = driver zip extraction root);
+# DRIVER_INSTALL=offline-inject only these subfolders (empty=all); DRIVER_CERT=specify the signing cert (empty=auto-extract from .cat).
 $DRIVER_DIR     = if ($env:DRIVER_DIR)     { $env:DRIVER_DIR }     elseif ($DRIVER_DIR)     { $DRIVER_DIR }     else { "ZIP/drivers" }
 $DRIVER_INSTALL = if ($env:DRIVER_INSTALL) { $env:DRIVER_INSTALL } elseif ($DRIVER_INSTALL) { $DRIVER_INSTALL } else { "" }
 $DRIVER_CERT    = if ($env:DRIVER_CERT)    { $env:DRIVER_CERT }    elseif ($DRIVER_CERT)    { $DRIVER_CERT }    else { "" }
-# 帳號名。用 $env:DVM_USERNAME（不能用 Windows 內建的 $env:USERNAME＝目前登入者）；也可用 config.ps1
-# 的一般變數 $USERNAME。皆未設 -> 預設 USER。
+# Account name. Use $env:DVM_USERNAME (not the built-in Windows $env:USERNAME = the current logged-in user); the plain
+# variable $USERNAME in config.ps1 also works. If neither is set -> defaults to USER.
 $USERNAME     = if ($env:DVM_USERNAME) { $env:DVM_USERNAME } elseif ($USERNAME) { $USERNAME } else { "USER" }
-# 帳號密碼：RDP/SSH 的網路登入不接受空密碼（Windows 預設 LimitBlankPasswordUse=1）。用 $env:DVM_PASSWORD
-# （@@PASSWORD@@ token 注入 unattend.xml，見第 8 步；相容舊的 SSH_PASSWORD）。
+# Account password: network logon for RDP/SSH does not accept a blank password (Windows default LimitBlankPasswordUse=1). Use $env:DVM_PASSWORD
+# (the @@PASSWORD@@ token is injected into unattend.xml, see step 8; compatible with the old SSH_PASSWORD).
 $PASSWORD     = if ($env:DVM_PASSWORD) { $env:DVM_PASSWORD } elseif ($env:SSH_PASSWORD) { $env:SSH_PASSWORD } elseif ($PASSWORD) { $PASSWORD } elseif ($SSH_PASSWORD) { $SSH_PASSWORD } else { "DroidVM" }
-# SSH 公鑰（可多把，用換行分隔）；空 = 只密碼登入。走環境變數，不落地到 inputs\。
+# SSH public key(s) (multiple allowed, newline-separated); empty = password login only. Passed via environment variable, not written to inputs\.
 $SSH_PUBKEY   = if ($env:SSH_PUBKEY)   { $env:SSH_PUBKEY }      elseif ($SSH_PUBKEY)   { $SSH_PUBKEY }        else { "" }
-# OpenSSH 安裝檔來源：URL(build 時下載) 或本地路徑(複製)。預設抓 arm64 .msi。空字串 = 不裝 SSH(僅 RDP)。
+# OpenSSH installer source: URL (downloaded at build time) or local path (copied). Defaults to the arm64 .msi. Empty string = do not install SSH (RDP only).
 $OPENSSH_SRC  = if ($env:OPENSSH_SRC)  { $env:OPENSSH_SRC }     elseif ($OPENSSH_SRC)  { $OPENSSH_SRC }       else { "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-ARM64-v10.0.0.0.msi" }
 Write-Host "[disk] drive letters: ESP=$LETTER_ESP Windows=$LETTER_WIN"
 
 foreach ($t in @("dism", "bcdboot", "diskpart", "qemu-img")) {
     if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { throw "$t not found (qemu-img needs QEMU for Windows installed and on PATH)" }
 }
-if (-not $SRC_ISO) { throw "Invalid SRC_ISO: set the Win11 ARM64 ISO (URL 或本地路徑) in config.ps1 / build_from_zip.ps1" }
+if (-not $SRC_ISO) { throw "Invalid SRC_ISO: set the Win11 ARM64 ISO (URL or local path) in config.ps1 / build_from_zip.ps1" }
 $SRC_ISO = Resolve-InputFile $SRC_ISO "win11-arm64.iso"
 
 $WORK = Join-Path $env:TEMP ("droidvm-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
@@ -250,13 +250,13 @@ function Cleanup {
 }
 
 try {
-    # === 1) Resolve driver source (URL -> files\ 下載; 本地 zip/資料夾 -> 直接用; zip -> 解壓到 files\) ===
-    # 驅動 zip -> 解壓根(ZIP)；DRIVER_DIR/DRIVER_CERT 的 ZIP/ 前綴展開成該根目錄。
+    # === 1) Resolve driver source (URL -> download to files\; local zip/folder -> use directly; zip -> extract to files\) ===
+    # Driver zip -> extraction root (ZIP); the ZIP/ prefix in DRIVER_DIR/DRIVER_CERT expands to that root directory.
     $zipRoot     = Resolve-ZipRoot $DRIVERS_DIR
     $DRIVER_DIR  = Expand-ZipToken $DRIVER_DIR  $zipRoot
     $DRIVER_CERT = Expand-ZipToken $DRIVER_CERT $zipRoot
-    if (-not (Test-Path $DRIVER_DIR -PathType Container)) { throw "找不到驅動資料夾 DRIVER_DIR: $DRIVER_DIR" }
-    if ($DRIVER_CERT -and -not (Test-Path $DRIVER_CERT)) { throw "找不到 DRIVER_CERT: $DRIVER_CERT" }
+    if (-not (Test-Path $DRIVER_DIR -PathType Container)) { throw "driver folder DRIVER_DIR not found: $DRIVER_DIR" }
+    if ($DRIVER_CERT -and -not (Test-Path $DRIVER_CERT)) { throw "DRIVER_CERT not found: $DRIVER_CERT" }
     $drvDir = $DRIVER_DIR
     $instShow = if ($DRIVER_INSTALL) { $DRIVER_INSTALL } else { "(all)" }
     $certShow = if ($DRIVER_CERT) { Split-Path $DRIVER_CERT -Leaf } else { "(auto from .cat)" }
@@ -302,15 +302,15 @@ exit
     Invoke-ExternalCommand -FilePath "dism" -ArgumentList @("/Apply-Image", "/ImageFile:$wim", "/Index:$IMAGE_INDEX", "/ApplyDir:$W\") -OutNull -What "dism /Apply-Image"
 
     # === 5) Offline driver injection (no signature prompt) ===
-    # 只離線注入 DRIVER_INSTALL 指定的驅動子資料夾（空=整個 $drvDir /Recurse）。/ForceUnsigned 免簽章提示。
-    # 注意：開機關鍵驅動（viostor/vioscsi）務必包含在 DRIVER_INSTALL，否則映像開不了機。
+    # Offline-inject only the driver subfolders listed in DRIVER_INSTALL (empty=the whole $drvDir /Recurse). /ForceUnsigned skips the signature prompt.
+    # Note: boot-critical drivers (viostor/vioscsi) must be included in DRIVER_INSTALL, otherwise the image will not boot.
     if ($DRIVER_INSTALL) {
         foreach ($d in ($DRIVER_INSTALL -split '\s+' | Where-Object { $_ })) {
             $sub = Join-Path $drvDir $d
             if (Test-Path $sub -PathType Container) {
                 Write-Host "[dism] inject driver: $d"
                 Invoke-ExternalCommand -FilePath "dism" -ArgumentList @("/Image:$W\", "/Add-Driver", "/Driver:$sub", "/Recurse", "/ForceUnsigned") -OutNull -What "dism /Add-Driver $d"
-            } else { Write-Host "  [warn] 要安裝的驅動 $d 不存在於 $drvDir" -ForegroundColor DarkYellow }
+            } else { Write-Host "  [warn] driver $d to install does not exist in $drvDir" -ForegroundColor DarkYellow }
         }
     } else {
         Write-Host "[dism] injecting all drivers offline ..."
@@ -318,21 +318,21 @@ exit
     }
 
     # === 5b) Extract driver signer certs (offline) -> stage for first-boot trust ===
-    # 離線注入(/ForceUnsigned)不需憑證，但那只讓「這批」驅動裝得進去。日後「互動式」更新驅動
-    # (Device Manager / pnputil / 廠商 installer) 會比對 TrustedPublisher；憑證不在 -> 跳「無法驗證
-    # 發行者」。這裡從 .cat 萃取每個獨立簽章者，staging 到 C:\DroidVM\certs，unattend specialize 再
-    # 匯入 Root+TrustedPublisher(對照 macos/autounattend.xml)。注意：這只消掉「安裝提示」，自簽驅動
-    # 開機載入仍靠 BCD testsigning(第 7 步)，不能因此關掉 testsigning。
+    # Offline injection (/ForceUnsigned) needs no cert, but that only lets "this batch" of drivers install. Later "interactive" driver updates
+    # (Device Manager / pnputil / vendor installer) check TrustedPublisher; if the cert is absent -> the "cannot verify
+    # publisher" prompt appears. Here we extract each distinct signer from the .cat, staging them to C:\DroidVM\certs, and unattend specialize then
+    # imports them into Root+TrustedPublisher (mirrors macos/autounattend.xml). Note: this only removes the "install prompt"; self-signed drivers
+    # still rely on BCD testsigning (step 7) to load at boot, so do not turn testsigning off because of this.
     Write-Host "[certs] staging driver signer cert(s) offline ..."
     $certDir = "$W\DroidVM\certs"
     New-Item -ItemType Directory -Force $certDir | Out-Null
     if ($DRIVER_CERT) {
-        # 指定憑證：直接放，unattend specialize 匯入 Root+TrustedPublisher（對照 macOS 的 DRIVER_CERT）。
+        # Specified cert: just place it, and unattend specialize imports it into Root+TrustedPublisher (mirrors macOS's DRIVER_CERT).
         Copy-Item $DRIVER_CERT (Join-Path $certDir (Split-Path $DRIVER_CERT -Leaf)) -Force
-        Write-Host "[certs] 用指定的 DRIVER_CERT: $(Split-Path $DRIVER_CERT -Leaf)"
+        Write-Host "[certs] using the specified DRIVER_CERT: $(Split-Path $DRIVER_CERT -Leaf)"
     } else {
-        # 沒指定 -> 從驅動 .cat/.sys 自動萃取所有唯一簽章者
-        # (.cat 最可靠：catalog-signed 驅動的 .sys 在 host 上未註冊 catalog 會顯示未簽，.cat 本身讀得到簽章者)
+        # Not specified -> auto-extract every unique signer from the driver .cat/.sys
+        # (.cat is most reliable: for catalog-signed drivers the .sys shows as unsigned when the catalog is not registered on the host, but the .cat itself reveals the signer)
         $seenThumb = @{}
         Get-ChildItem $drvDir -Recurse -Include *.cat, *.sys, *.dll, *.exe -ErrorAction SilentlyContinue | ForEach-Object {
             try {
@@ -343,10 +343,10 @@ exit
                 }
             } catch {}
         }
-        # 也收 driver 包內直接附的 *.cer（如 DroidVM_Test.cer）
+        # Also collect any *.cer bundled directly in the driver package (e.g. DroidVM_Test.cer)
         Get-ChildItem $drvDir -Recurse -Filter *.cer -ErrorAction SilentlyContinue |
             ForEach-Object { Copy-Item $_.FullName (Join-Path $certDir $_.Name) -Force }
-        Write-Host "[certs] 從驅動 .cat 自動萃取 $($seenThumb.Count) 張憑證 -> $certDir"
+        Write-Host "[certs] auto-extracted $($seenThumb.Count) cert(s) from driver .cat -> $certDir"
     }
 
     # === 6) Debloat (offline removal of provisioned Appx) ===
@@ -362,8 +362,8 @@ exit
     } catch { Write-Host "  (skipping debloat: $($_.Exception.Message))" -ForegroundColor DarkYellow }
 
     # === 6b) Offline shrink: WinSxS ResetBase + disable hibernate ===
-    # 對應 macOS debloat 的 WinSxS 壓實與關 hibernate，這裡用離線版（不需開機）。
-    # 純為縮小映像，失敗不影響可用性，故全部設為非致命。
+    # Mirrors the macOS debloat's WinSxS compaction and hibernate disable, here using the offline version (no boot needed).
+    # Purely to shrink the image; failure does not affect usability, so everything is set as non-fatal.
     Write-Host "[debloat] WinSxS component cleanup (ResetBase, offline) ..."
     try {
         Invoke-ExternalCommand -FilePath "dism" -ArgumentList @("/Image:$W\", "/Cleanup-Image", "/StartComponentCleanup", "/ResetBase") -OutNull -What "dism /Cleanup-Image /ResetBase"
@@ -372,7 +372,7 @@ exit
     }
 
     Write-Host "[debloat] disabling hibernate offline (no hiberfil.sys) ..."
-    # 離線改 SYSTEM hive：HibernateEnabled=0 -> 首次開機不會建立 hiberfil.sys。
+    # Offline edit of the SYSTEM hive: HibernateEnabled=0 -> first boot will not create hiberfil.sys.
     $sysHive = "$W\Windows\System32\config\SYSTEM"
     $hiveLoaded = $false
     try {
@@ -386,7 +386,7 @@ exit
                 reg add $pk /v HibernateEnabled        /t REG_DWORD /d 0 /f *> $null
                 reg add $pk /v HibernateEnabledDefault /t REG_DWORD /d 0 /f *> $null
             }
-            # 啟用 RDP（離線）：fDenyTSConnections=0。防火牆規則另在首次開機由 setup-ssh.ps1 開啟。
+            # Enable RDP (offline): fDenyTSConnections=0. The firewall rule is opened separately at first boot by setup-ssh.ps1.
             $tk = "HKLM\DVMOFF\$cs\Control\Terminal Server"
             reg query $tk *> $null
             if ($LASTEXITCODE -eq 0) {
@@ -397,7 +397,7 @@ exit
     } catch {
         Write-Host "  (skipping hibernate-off: $($_.Exception.Message))" -ForegroundColor DarkYellow
     } finally {
-        # hive 一定要 unload，否則第 9 步 dismount VHDX 會失敗。
+        # The hive must be unloaded, otherwise step 9 dismount VHDX will fail.
         if ($hiveLoaded) {
             [gc]::Collect(); [gc]::WaitForPendingFinalizers()
             reg unload HKLM\DVMOFF *> $null
@@ -415,8 +415,8 @@ exit
     Show-CommandLine "New-Item" @("-ItemType", "Directory", "-Force", "$W\Windows\Panther")
     New-Item -ItemType Directory -Force "$W\Windows\Panther" | Out-Null
     $unattendSrc = Join-Path $HERE "unattend.xml"
-    # 注入帳號/密碼（@@USERNAME@@ / @@PASSWORD@@ token）。XML-escape 讓帳密含 &<>" 時 XML 仍合法
-    # （對照 macOS 的 perl 版）。用 .NET 寫 UTF-8 無 BOM，跟原檔一致。
+    # Inject account/password (@@USERNAME@@ / @@PASSWORD@@ tokens). XML-escape keeps the XML valid when the credentials contain &<>"
+    # (mirrors the macOS perl version). Write UTF-8 without BOM via .NET, matching the original file.
     $esc = { param($s) $s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;') }
     $unattendXml = (Get-Content $unattendSrc -Raw).Replace('@@USERNAME@@', (& $esc $USERNAME)).Replace('@@PASSWORD@@', (& $esc $PASSWORD))
     Show-CommandLine "Set-Content" @("$W\Windows\Panther\unattend.xml", "(unattend.xml + password)")
@@ -424,40 +424,40 @@ exit
     Write-Host "[oobe] unattend.xml placed (first boot creates USER, autologon, imports certs)"
 
     # === 8c) Stage SSH payload into image (offline) ===
-    # setup-ssh.ps1 由 unattend FirstLogonCommands 於首次開機執行（裝 sshd 服務需線上註冊）。
+    # setup-ssh.ps1 is run by unattend FirstLogonCommands at first boot (installing the sshd service requires online registration).
     $stage = "$W\DroidVM"
     New-Item -ItemType Directory -Force $stage | Out-Null
     Copy-Item (Join-Path $HERE "setup-ssh.ps1") "$stage\setup-ssh.ps1" -Force
-    # pvmpower devnode：pvmpower.sys 綁 root-enumerated ROOT\PVMPOWER，要在首次開機用 SetupAPI 建 devnode
-    # （INF/DISM 注入不會建 devnode）。驅動 zip 有就放，沒有就跳過（舊版驅動沒 pvmpower，屬正常）。
+    # pvmpower devnode: pvmpower.sys binds to the root-enumerated ROOT\PVMPOWER, so the devnode must be created at first boot via SetupAPI
+    # (INF/DISM injection does not create a devnode). Stage it if the driver zip has it, skip if not (older drivers lack pvmpower, which is normal).
     $pvmDevnode = Join-Path $zipRoot "pvmpower-devnode.ps1"
     if (Test-Path $pvmDevnode) { Copy-Item $pvmDevnode "$stage\pvmpower-devnode.ps1" -Force; Write-Host "[pvmpower] staged pvmpower-devnode.ps1" }
-    # OpenSSH 安裝檔：$OPENSSH_SRC 可為 URL(下載到 files\) 或本地路徑；空 = 不裝 SSH。解析後複製進映像。
-    # 建議 arm64 .msi（一鍵裝好服務/host key/防火牆），也接受 .zip。非致命：拿不到就只設 RDP。
+    # OpenSSH installer: $OPENSSH_SRC can be a URL (downloaded to files\) or a local path; empty = do not install SSH. After resolving, copy it into the image.
+    # An arm64 .msi is recommended (sets up service/host key/firewall in one step); .zip is also accepted. Non-fatal: if it cannot be obtained, only RDP is set up.
     if ($OPENSSH_SRC) {
         try {
             $sshLocal = Resolve-InputFile $OPENSSH_SRC
             Copy-Item $sshLocal (Join-Path $stage (Split-Path $sshLocal -Leaf)) -Force
             Write-Host "[ssh] staged $(Split-Path $sshLocal -Leaf)"
         } catch {
-            Write-Host "[ssh] OpenSSH staging 失敗 -> 只設 RDP：$($_.Exception.Message)" -ForegroundColor DarkYellow
+            Write-Host "[ssh] OpenSSH staging failed -> RDP only: $($_.Exception.Message)" -ForegroundColor DarkYellow
         }
     } else {
-        Write-Host "[ssh] `$OPENSSH_SRC 空 -> 不裝 SSH（僅 RDP）" -ForegroundColor DarkYellow
+        Write-Host "[ssh] `$OPENSSH_SRC empty -> do not install SSH (RDP only)" -ForegroundColor DarkYellow
     }
-    # authorized_keys 由環境變數 $SSH_PUBKEY 提供（多把金鑰換行分隔），UTF-8 無 BOM + LF。
+    # authorized_keys is provided by the $SSH_PUBKEY environment variable (multiple keys newline-separated), UTF-8 without BOM + LF.
     if ($SSH_PUBKEY) {
         $akText = ($SSH_PUBKEY -replace "`r`n", "`n" -replace "`r", "`n").TrimEnd("`n") + "`n"
         [System.IO.File]::WriteAllText("$stage\authorized_keys", $akText, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Host "[ssh] staged authorized_keys from `$SSH_PUBKEY (金鑰登入)"
+        Write-Host "[ssh] staged authorized_keys from `$SSH_PUBKEY (key login)"
     } else {
-        Write-Host "[ssh] `$SSH_PUBKEY 未設 -> 僅密碼登入" -ForegroundColor DarkYellow
+        Write-Host "[ssh] `$SSH_PUBKEY not set -> password login only" -ForegroundColor DarkYellow
     }
 
     # === 8b) ReTrim so debloat/cleanup actually shrinks the image ===
-    # 對應 macOS 的 Optimize-Volume -ReTrim：把上面 debloat/ResetBase 釋放的 cluster
-    # unmap 掉。否則那些空間在 NTFS 雖標記 free，VHDX 裡仍是舊資料（非零），
-    # 第 9 步 qemu-img convert 會把它們一起複製進 qcow2 → 縮不掉。
+    # Mirrors macOS's Optimize-Volume -ReTrim: unmaps the clusters freed above by debloat/ResetBase.
+    # Otherwise, although that space is marked free in NTFS, the VHDX still holds the old data (non-zero),
+    # and step 9 qemu-img convert would copy it into the qcow2 too -> no shrink.
     Write-Host "[shrink] Optimize-Volume -ReTrim on $W ..."
     try {
         Show-CommandLine "Optimize-Volume" @("-DriveLetter", $LETTER_WIN, "-ReTrim")

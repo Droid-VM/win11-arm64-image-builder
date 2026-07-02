@@ -1,40 +1,40 @@
 #!/usr/bin/env bash
 # =====================================================================
-# 00-make-patches.sh — 把原本的「Linux 端」流程併進 Mac：用 Colima 容器跑
-# macos/make-patches.sh（hivex），產生兩個 testsigning BCD 到 files/patches/。免另一台 Linux。
-#   需求：brew install colima docker
-#   用法：00-make-patches.sh <iso-path>   （或設 SRC_ISO；FORCE=1 可強制重做）
+# 00-make-patches.sh — folds the original Linux-side workflow into the Mac: runs via a Colima container
+# macos/make-patches.sh (hivex), producing two testsigning BCDs into files/patches/. No separate Linux needed.
+#   Requires: brew install colima docker
+#   Usage: 00-make-patches.sh <iso-path>   (or set SRC_ISO; FORCE=1 to force a rebuild)
 # =====================================================================
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILES="${FILES:-$HERE/files}"
 
 ISO="${1:-${SRC_ISO:-}}"
-[ -n "$ISO" ] && [ -f "$ISO" ] || { echo "[patches] 需要有效的 ISO（第一個參數或 SRC_ISO）: '$ISO'"; exit 1; }
+[ -n "$ISO" ] && [ -f "$ISO" ] || { echo "[patches] need a valid ISO (first argument or SRC_ISO): '$ISO'"; exit 1; }
 ISO_ABS="$(cd "$(dirname "$ISO")" && pwd)/$(basename "$ISO")"
 OUTDIR="$FILES/patches"; mkdir -p "$OUTDIR"
 
-# 已產好就跳過（FORCE=1 強制重做）
+# Skip if already produced (FORCE=1 forces a rebuild)
 if [ -z "${FORCE:-}" ] && [ -f "$OUTDIR/bcd-patched" ] && [ -f "$OUTDIR/bcd-template-patched" ]; then
-  echo "[patches] 已存在，略過（FORCE=1 可重做）：$OUTDIR"
+  echo "[patches] already exists, skipping (FORCE=1 to rebuild): $OUTDIR"
   exit 0
 fi
 
-command -v colima >/dev/null || { echo "缺 colima — brew install colima docker"; exit 1; }
-command -v docker >/dev/null || { echo "缺 docker CLI — brew install docker"; exit 1; }
+command -v colima >/dev/null || { echo "missing colima — brew install colima docker"; exit 1; }
+command -v docker >/dev/null || { echo "missing docker CLI — brew install docker"; exit 1; }
 
-# 確保 Colima（Linux VM）有跑
+# Ensure Colima (the Linux VM) is running
 if ! colima status >/dev/null 2>&1; then
-  echo "[patches] 啟動 Colima ..."
+  echo "[patches] starting Colima ..."
   colima start
 fi
 
-echo "[patches] 建 patcher image（首次較久，之後有快取）..."
+echo "[patches] building patcher image (slow the first time, cached afterwards) ..."
 docker build -q -t droidvm-patcher "$HERE" >/dev/null
 
-echo "[patches] 容器內產生 testsigning BCD ..."
-# --privileged：make-patches.sh 用 loop mount 讀 ISO（Colima 的 Lima VM 有真 kernel + loop）。
-# 掛 macos/ -> /work（scripts 在 /work，寫 /work/files/patches）；ISO -> /iso.iso。
+echo "[patches] generating testsigning BCD inside the container ..."
+# --privileged: make-patches.sh uses a loop mount to read the ISO (the Colima Lima VM has a real kernel + loop).
+# Mount macos/ -> /work (scripts live in /work, writing to /work/files/patches); ISO -> /iso.iso.
 docker run --rm --privileged \
   -v "$HERE:/work" \
   -v "$ISO_ABS:/iso.iso:ro" \
@@ -43,5 +43,5 @@ docker run --rm --privileged \
   droidvm-patcher ./make-patches.sh
 
 [ -f "$OUTDIR/bcd-patched" ] && [ -f "$OUTDIR/bcd-template-patched" ] \
-  || { echo "[patches] 容器跑完但沒產出，檢查上面訊息"; exit 1; }
-echo "[patches] 完成 -> $OUTDIR"
+  || { echo "[patches] container finished but produced no output, check the messages above"; exit 1; }
+echo "[patches] done -> $OUTDIR"

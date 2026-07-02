@@ -1,39 +1,39 @@
 #!/usr/bin/env bash
 # =====================================================================
-# 03-run-install.sh  (Apple Silicon Mac, qemu HVF 原生加速) — 兩階段安裝
-#   Phase A：安裝媒體(CD)開機 -> WinPE 套用映像 -> Setup 建 BCD -> 要 reboot。
-#            偵測「套用完成」(qcow2 成長後停滯) 後停 qemu。
-#   BCD patch：離線把已安裝系統的 ESP BCD 補上 testsigning（見 patch-esp-bcd.sh；
-#            bcdboot 不會把 BCD-Template 的 testsigning 帶過去，少了它第一次開機自簽 viostor
-#            會被擋 -> reboot loop）。
-#   Phase B：只從磁碟開機 -> specialize/OOBE/FirstLogon(裝驅動/憑證/SSH/RDP/debloat) -> 自動關機。
-# target 碟 discard=unmap：guest TRIM 即時釋放 qcow2 cluster。需求：brew install qemu；BCD patch 需 colima+docker。
+# 03-run-install.sh  (Apple Silicon Mac, qemu HVF native acceleration) — two-phase install
+#   Phase A: boot from install media (CD) -> WinPE applies image -> Setup creates BCD -> wants reboot.
+#            After detecting "apply complete" (qcow2 grows then stalls), stop qemu.
+#   BCD patch: offline, add testsigning to the installed system's ESP BCD (see patch-esp-bcd.sh;
+#            bcdboot does not carry over BCD-Template's testsigning; without it, the self-signed viostor on first boot
+#            gets blocked -> reboot loop).
+#   Phase B: boot from disk only -> specialize/OOBE/FirstLogon(install drivers/certs/SSH/RDP/debloat) -> auto shutdown.
+# target disk discard=unmap: guest TRIM instantly frees qcow2 clusters. Requires: brew install qemu; BCD patch needs colima+docker.
 # =====================================================================
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FILES="${FILES:-$HERE/files}"; mkdir -p "$FILES"   # 中間檔（setup ISO / 工作 qcow2 / NVRAM / qmp / log）都放 macos/files
-# 變數由 build.sh / build_runme.sh 提供（環境變數）。
+FILES="${FILES:-$HERE/files}"; mkdir -p "$FILES"   # intermediate files (setup ISO / working qcow2 / NVRAM / qmp / log) all go in macos/files
+# Variables are provided by build.sh / build_runme.sh (environment variables).
 
 SETUP_ISO="${SETUP_ISO:-$FILES/win11-droidvm-setup.iso}"
 QCOW="${QCOW:-$FILES/win11-droidvm.qcow2}"
 DISK_SIZE="${DISK_SIZE:-40G}"; MEM="${MEM:-8G}"; SMP="${SMP:-6}"
-# 顯示模式：BACKGROUND=true(預設)=headless(VNC)；false=原生 qemu 視窗(-display cocoa，要在 Mac 桌面 Terminal 跑)。
-# 直接設 DISPLAY_OPT 可完全覆蓋。auto-click 走 QMP，兩種模式都有效。
+# Display mode: BACKGROUND=true(default)=headless(VNC); false=native qemu window(-display cocoa, must run in a Terminal on the Mac desktop).
+# Setting DISPLAY_OPT directly fully overrides. auto-click goes through QMP, works in both modes.
 BACKGROUND="${BACKGROUND:-true}"
 if [ -z "${DISPLAY_OPT:-}" ]; then
   case "$BACKGROUND" in
     false|0|no) DISPLAY_OPT="-display cocoa" ;;
-    *)          DISPLAY_OPT="-vnc 127.0.0.1:5" ;;   # Mac 內建螢幕共享佔 :0，用 :5 = port 5905
+    *)          DISPLAY_OPT="-vnc 127.0.0.1:5" ;;   # Mac built-in screen sharing uses :0, use :5 = port 5905
   esac
 fi
 
-[ -f "$SETUP_ISO" ] || { echo "缺少 setup ISO: $SETUP_ISO, 先跑 02-make-iso.sh"; exit 1; }
-command -v qemu-system-aarch64 >/dev/null || { echo "需要 qemu：brew install qemu"; exit 1; }
+[ -f "$SETUP_ISO" ] || { echo "Missing setup ISO: $SETUP_ISO, run 02-make-iso.sh first"; exit 1; }
+command -v qemu-system-aarch64 >/dev/null || { echo "qemu required: brew install qemu"; exit 1; }
 
 BREW="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
 CODE=""; for c in "$BREW/share/qemu/edk2-aarch64-code.fd" /usr/local/share/qemu/edk2-aarch64-code.fd; do [ -f "$c" ] && CODE="$c" && break; done
-[ -n "$CODE" ] || { echo "找不到 edk2-aarch64-code.fd（brew install qemu）"; exit 1; }
-# 每次 build 都用全新的工作碟 + NVRAM（前次中斷後的髒碟/舊 NVRAM 會導致 Phase B reboot loop）
+[ -n "$CODE" ] || { echo "Cannot find edk2-aarch64-code.fd (brew install qemu)"; exit 1; }
+# Every build uses a fresh working disk + NVRAM (a dirty disk/old NVRAM from a previous interruption causes a Phase B reboot loop)
 VARS="$FILES/edk2-arm-vars.fd"; rm -f "$VARS"; dd if=/dev/zero of="$VARS" bs=1m count=64 2>/dev/null
 rm -f "$QCOW"; qemu-img create -f qcow2 "$QCOW" "$DISK_SIZE" >/dev/null
 QMP="$FILES/qmp.sock"
@@ -50,12 +50,12 @@ QEMU_COMMON=(
   -rtc base=localtime
 )
 
-# start_qemu <cd|disk>：cd = 安裝媒體(bootindex0)+磁碟(1)；disk = 只有磁碟(bootindex0)。同時起 auto-click。
+# start_qemu <cd|disk>: cd = install media(bootindex0)+disk(1); disk = disk only(bootindex0). Also starts auto-click.
 start_qemu() {
   local mode="$1"; rm -f "$QMP"
   if [ "$mode" = cd ]; then
-    # -no-reboot：Setup 套完映像 reboot 時 qemu 直接退出，不會進「CD 提示逾時 -> 未 patch 的磁碟
-    # 開機失敗 -> reset」的循環。等於使用者說的「開機就關機」，但用 qemu 內建旗標、免編 boot img。
+    # -no-reboot: when Setup finishes applying the image and reboots, qemu exits directly, avoiding the "CD prompt times out -> unpatched disk
+    # fails to boot -> reset" loop. Equivalent to the user's "shut down as soon as it boots", but uses qemu's built-in flag, no boot img needed.
     qemu-system-aarch64 "${QEMU_COMMON[@]}" -no-reboot \
       -device virtio-blk-pci,drive=target,bootindex=1 \
       -drive "if=none,id=target,file=$QCOW,format=qcow2,cache=writeback,discard=unmap,detect-zeroes=unmap" \
@@ -78,40 +78,40 @@ stop_qemu() {
   wait "${QEMU_PID:-}"  2>/dev/null || true
 }
 
-# ---- Phase A：安裝媒體開機、套用映像 ----
-echo "[qemu] === Phase A：安裝媒體開機、套用映像 ==="
-echo "[qemu]   ⓘ 套完映像後 Setup 會 reboot，-no-reboot 讓 qemu 直接退出 -> 進 BCD patch。此階段請勿中斷。"
+# ---- Phase A: boot from install media, apply image ----
+echo "[qemu] === Phase A: boot from install media, apply image ==="
+echo "[qemu]   ⓘ After the image is applied, Setup reboots; -no-reboot makes qemu exit directly -> BCD patch. Do not interrupt this phase."
 start_qemu cd
-# 主要訊號：-no-reboot 讓 qemu 在 Setup 套完映像 reboot 時退出（~秒級，畫面不再 loop）。
-# 後備：萬一某情況 reboot 沒觸發退出，仍用「qcow2 成長後停滯 STALL 秒」判斷套用完成。
+# Primary signal: -no-reboot makes qemu exit when Setup finishes applying the image and reboots (within seconds, screen no longer loops).
+# Fallback: in case reboot does not trigger exit for some reason, still use "qcow2 grows then stalls for STALL seconds" to determine apply is complete.
 MIN_APPLIED=$((3 * 1024 * 1024 * 1024)); STALL=75; MAXA=2400
 t0=$(date +%s); last=0; laststamp=$t0
 while :; do
   sleep 10
-  if ! ps -p "$QEMU_PID" >/dev/null 2>&1; then echo "[qemu] 映像套用完成（reboot 觸發 -no-reboot 退出）"; break; fi
+  if ! ps -p "$QEMU_PID" >/dev/null 2>&1; then echo "[qemu] image apply complete (reboot triggered -no-reboot exit)"; break; fi
   sz=$(stat -f %z "$QCOW" 2>/dev/null || echo 0); now=$(date +%s)
   [ "$sz" -gt "$last" ] && { last=$sz; laststamp=$now; }
   if [ "$sz" -gt "$MIN_APPLIED" ] && [ $((now - laststamp)) -ge "$STALL" ]; then
-    echo "[qemu] 映像套用完成（size 停滯後備偵測，$((sz/1048576))MB）"; break
+    echo "[qemu] image apply complete (size-stall fallback detection, $((sz/1048576))MB)"; break
   fi
-  [ $((now - t0)) -ge "$MAXA" ] && { echo "[qemu] Phase A 逾時"; stop_qemu; exit 1; }
+  [ $((now - t0)) -ge "$MAXA" ] && { echo "[qemu] Phase A timed out"; stop_qemu; exit 1; }
 done
 stop_qemu
 sz=$(stat -f %z "$QCOW" 2>/dev/null || echo 0)
-[ "$sz" -gt "$MIN_APPLIED" ] || { echo "[qemu] Phase A 未套到映像（qcow2 僅 $((sz/1048576))MB）"; exit 1; }
+[ "$sz" -gt "$MIN_APPLIED" ] || { echo "[qemu] Phase A did not apply the image (qcow2 is only $((sz/1048576))MB)"; exit 1; }
 
-# ---- BCD patch：離線補 ESP BCD 的 testsigning（用 Colima 容器）----
-echo "[bcd] === 離線補 ESP BCD testsigning ==="
-command -v docker >/dev/null || { echo "缺 docker（BCD patch 需要）— brew install colima docker"; exit 1; }
+# ---- BCD patch: offline add testsigning to ESP BCD (using a Colima container) ----
+echo "[bcd] === offline add ESP BCD testsigning ==="
+command -v docker >/dev/null || { echo "docker missing (needed by BCD patch) — brew install colima docker"; exit 1; }
 colima status >/dev/null 2>&1 || colima start
 docker build -q -t droidvm-patcher "$HERE" >/dev/null
-# 掛 macos/ -> /work（scripts 在 /work，中間檔在 /work/files）
+# Mount macos/ -> /work (scripts in /work, intermediate files in /work/files)
 docker run --rm --privileged -v "$HERE:/work" droidvm-patcher \
   bash /work/patch-esp-bcd.sh "/work/files/$(basename "$QCOW")"
 
-# ---- Phase B：只從磁碟開機、跑完 OOBE/FirstLogon ----
-echo "[qemu] === Phase B：磁碟開機、跑完 OOBE/FirstLogon（會自動關機）==="
+# ---- Phase B: boot from disk only, run through OOBE/FirstLogon ----
+echo "[qemu] === Phase B: boot from disk, run through OOBE/FirstLogon (auto shutdown) ==="
 start_qemu disk
 wait "$QEMU_PID" 2>/dev/null || true
 kill "${CLICK_PID:-}" 2>/dev/null || true
-echo "[qemu] 安裝完成、guest 已關機 -> $QCOW"
+echo "[qemu] install complete, guest has shut down -> $QCOW"

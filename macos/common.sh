@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # =====================================================================
-# common.sh — 檔案類輸入的統一解析（給 build.sh source）。
-#   規則：URL -> 下載到 files/ 再使用；本地路徑 -> 直接使用。
-#   zip 的解壓縮屬「使用檔案」的內部流程（也放在 files/），與是不是 URL 無關。
-# 需要呼叫端先設好 $HERE（macos/）。中間檔+快取都放 $FILES = macos/files。
+# common.sh — unified resolution of file-type inputs (sourced by build.sh).
+#   Rule: URL -> download into files/ then use; local path -> use directly.
+#   Unzipping is part of the internal "use the file" flow (also placed in files/), regardless of whether it is a URL.
+# The caller must set $HERE (macos/) first. Intermediate files + cache all go in $FILES = macos/files.
 # =====================================================================
 FILES="${FILES:-$HERE/files}"
 
 # resolve_file <url-or-path> [save-as]
-#   URL  -> 下載到 files/<save-as>（save-as 省略則取 URL 檔名），回傳該路徑
-#   路徑 -> 原樣回傳（需存在）
+#   URL  -> download into files/<save-as> (if save-as is omitted, take the URL filename), return that path
+#   path -> return as-is (must exist)
 resolve_file() {
   local src="$1" name="${2:-}"
   case "$src" in
@@ -18,20 +18,20 @@ resolve_file() {
       mkdir -p "$FILES"
       local dst="$FILES/$name"
       if [ -f "$dst" ]; then
-        echo "[files] 已存在，略過下載: $dst" >&2
+        echo "[files] already exists, skipping download: $dst" >&2
       else
-        echo "[files] 下載 $src -> $dst" >&2
+        echo "[files] downloading $src -> $dst" >&2
         curl -fL "$src" -o "$dst.part" && mv "$dst.part" "$dst"
       fi
       printf '%s\n' "$dst" ;;
     *)
-      [ -e "$src" ] || { echo "[files] 找不到: $src" >&2; return 1; }
+      [ -e "$src" ] || { echo "[files] not found: $src" >&2; return 1; }
       printf '%s\n' "$src" ;;
   esac
 }
 
 # resolve_dir <path>
-#   資料夾 -> 原樣回傳；zip -> 解壓到 files/<stem>/ 再回傳該資料夾（不重覆解壓）
+#   folder -> return as-is; zip -> extract into files/<stem>/ then return that folder (does not re-extract)
 resolve_dir() {
   local p="$1"
   if [ -d "$p" ]; then printf '%s\n' "$p"; return 0; fi
@@ -41,11 +41,11 @@ resolve_dir() {
       stem="$(basename "$p" .zip)"
       out="$FILES/$stem"
       if [ ! -d "$out" ] || [ -z "$(ls -A "$out" 2>/dev/null)" ]; then
-        echo "[files] 解壓 $p -> $out" >&2
+        echo "[files] extracting $p -> $out" >&2
         mkdir -p "$out"; unzip -q -o "$p" -d "$out"
       fi
       printf '%s\n' "$out" ;;
     *)
-      echo "[files] 不是資料夾也不是 zip: $p" >&2; return 1 ;;
+      echo "[files] not a folder and not a zip: $p" >&2; return 1 ;;
   esac
 }

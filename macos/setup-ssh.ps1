@@ -1,10 +1,10 @@
 <#
-  setup-ssh.ps1 — 首次開機（以建立的管理員帳號）裝 OpenSSH Server：
-    - arm64 .msi 優先（一鍵裝好服務/host key/ACL），.zip 備援（install-sshd + ssh-keygen -A + FixHostFilePermissions）
-    - authorized_keys -> C:\ProgramData\ssh\administrators_authorized_keys（管理員金鑰路徑）+ 收緊 ACL
-    - 開 SSH(22) 防火牆、啟動 sshd（開機自動）
-  安裝檔與金鑰由 02-make-iso.sh staging 到 C:\DroidVM\；公鑰來源是 build_runme.sh 的 SSH_PUBKEY。
-  沒有 OpenSSH 安裝檔就直接略過（不致命）。
+  setup-ssh.ps1 — installs OpenSSH Server on first boot (as the created administrator account):
+    - arm64 .msi preferred (one-click installs service/host key/ACL), .zip fallback (install-sshd + ssh-keygen -A + FixHostFilePermissions)
+    - authorized_keys -> C:\ProgramData\ssh\administrators_authorized_keys (the administrator key path) + tighten ACL
+    - Open the SSH(22) firewall, start sshd (auto-start on boot)
+  The installer and keys are staged to C:\DroidVM\ by 02-make-iso.sh; the public key source is SSH_PUBKEY from build_runme.sh.
+  When no OpenSSH installer is present, simply skip it (not fatal).
 #>
 $ErrorActionPreference = 'Stop'
 
@@ -14,7 +14,7 @@ $sshInstalled = $false
 
 if ($msi) {
     $p = Start-Process msiexec.exe -ArgumentList @('/i', "`"$($msi.FullName)`"", '/qn', '/norestart') -Wait -PassThru
-    if ($p.ExitCode -ne 0) { throw "msiexec 失敗 (exit $($p.ExitCode))" }
+    if ($p.ExitCode -ne 0) { throw "msiexec failed (exit $($p.ExitCode))" }
     $sshInstalled = $true
 }
 elseif ($zip) {
@@ -31,14 +31,14 @@ elseif ($zip) {
     $sshInstalled = $true
 }
 else {
-    Write-Host 'No OpenSSH installer staged (C:\DroidVM 無 msi/zip) -> 跳過 SSH'
+    Write-Host 'No OpenSSH installer staged (no msi/zip in C:\DroidVM) -> skip SSH'
 }
 
 if ($sshInstalled) {
     Set-Service sshd      -StartupType Automatic
     Set-Service ssh-agent -StartupType Automatic -ErrorAction SilentlyContinue
 
-    # 管理員帳號的金鑰不讀家目錄，而是 administrators_authorized_keys，且 ACL 必須只有 SYSTEM+Administrators
+    # An administrator account key is not read from the home directory but from administrators_authorized_keys, and the ACL must contain only SYSTEM+Administrators
     if (Test-Path 'C:\DroidVM\authorized_keys') {
         $ak = 'C:\ProgramData\ssh\administrators_authorized_keys'
         New-Item -ItemType Directory -Force (Split-Path $ak) | Out-Null
@@ -54,14 +54,14 @@ if ($sshInstalled) {
     Write-Host 'OpenSSH Server ready (port 22, auto-start).'
 }
 
-# ---- RDP：開遠端桌面（FirstLogon 以 SYSTEM/管理員權限，HKLM 寫得進）----
+# ---- RDP: enable Remote Desktop (FirstLogon runs with SYSTEM/administrator privileges, so HKLM is writable) ----
 Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Type DWord -Force
-# NLA 開著較安全；要純密碼免 NLA 可把下行改成 0
+# NLA on is more secure; for plain password without NLA, change the line below to 0
 Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1 -Type DWord -Force
 Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
 Set-Service TermService -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service TermService -ErrorAction SilentlyContinue
-# 把目前帳號(FirstLogon 執行者)加進 Remote Desktop Users。管理員本來就能 RDP，這條是保險/明確化，
-# 帳號若非管理員則為必要。已是成員/管理員時會報錯，無害，故忽略。
+# Add the current account (the FirstLogon runner) to Remote Desktop Users. Administrators can already RDP, so this is a safeguard / for clarity,
+# and is required if the account is not an administrator. It errors when already a member/administrator, which is harmless, so it is ignored.
 net localgroup "Remote Desktop Users" "$env:USERNAME" /add 2>$null | Out-Null
 Write-Host 'RDP enabled (port 3389).'
