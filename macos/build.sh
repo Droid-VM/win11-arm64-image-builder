@@ -99,6 +99,18 @@ bash "$HERE/03-run-install.sh"
 
 echo "[build] === 4/4 壓縮 qcow2 ==="
 OUT_QCOW="${OUT_QCOW:-$HERE/win11-droidvm-final.qcow2}"   # 最終產物放 macos/
+# convert 只寫已配置的 cluster -> 產物是精簡/sparse 的（安裝時 discard=unmap + debloat 的
+# Optimize-Volume -ReTrim 已把 guest 釋放的空間即時 TRIM 掉，工作 qcow2 本身就不會膨脹）。
 qemu-img convert -O qcow2 "$FILES/win11-droidvm.qcow2" "$OUT_QCOW"
 sz=$(ls -lh "$OUT_QCOW" | awk '{print $5}')
 echo "[build] 完成 ✅  -> $OUT_QCOW ($sz)"
+
+# 收尾：把大中間檔（工作 qcow2 ~8G、setup ISO ~5G）刪掉還空間給 Mac；下載快取(files/patches、
+# 驅動、msi)保留。要留著中間檔除錯就設 KEEP_WORK=1。
+if [ -z "${KEEP_WORK:-}" ]; then
+  rm -f "$FILES/win11-droidvm.qcow2" "$FILES/win11-droidvm-setup.iso" \
+        "$FILES/edk2-arm-vars.fd" "$FILES/qmp.sock" "$FILES/clicker.log"
+  echo "[build] 已清中間檔（KEEP_WORK=1 可保留）"
+fi
+# 把 Colima VM 內釋放的空間（BCD patch 的暫存 raw 等）trim 還給 Mac 的磁碟映像（best-effort）
+colima ssh -- sudo fstrim -a >/dev/null 2>&1 || true
