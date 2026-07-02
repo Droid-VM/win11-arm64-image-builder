@@ -11,6 +11,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 export LC_ALL="${LC_ALL:-en_US.UTF-8}" LANG="${LANG:-en_US.UTF-8}"
+# 結束時（成功或失敗）刪掉 build 自己建的 patcher image，不動使用者其他 image（不用 prune）
+trap 'docker image rm -f droidvm-patcher >/dev/null 2>&1 || true' EXIT
 . "$HERE/common.sh"
 
 for t in qemu-system-aarch64 wimlib-imagex xorriso; do

@@ -31,7 +31,6 @@ fi
 
 echo "[patches] 建 patcher image（首次較久，之後有快取）..."
 docker build -q -t droidvm-patcher "$HERE" >/dev/null
-docker image prune -f >/dev/null 2>&1 || true   # 清掉 Dockerfile 改動留下的 dangling image，別讓 Colima 磁碟越積越多
 
 echo "[patches] 容器內產生 testsigning BCD ..."
 # --privileged：make-patches.sh 用 loop mount 讀 ISO（Colima 的 Lima VM 有真 kernel + loop）。
