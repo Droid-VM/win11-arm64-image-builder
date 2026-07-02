@@ -60,6 +60,17 @@ for d in $WINPE_DRIVERS; do
 done
 cp "$HERE/debloat.ps1" "$WORK/OEM/DroidVM/debloat.ps1"
 
+# pvmpower 綁 root-enumerated ROOT\PVMPOWER：devnode 要在 first boot 用 SetupAPI 建立
+# （INF 注入不會產生 devnode）。腳本由驅動 zip 根目錄提供；舊 zip 沒有就跳過（autounattend
+# 端也有 if exist 防呆）。
+ZIPROOT="$(dirname "$DRIVER_DIR")"
+if [ -f "$ZIPROOT/pvmpower-devnode.ps1" ]; then
+  cp "$ZIPROOT/pvmpower-devnode.ps1" "$WORK/OEM/DroidVM/pvmpower-devnode.ps1"
+  echo "[pvmpower] staged pvmpower-devnode.ps1"
+else
+  echo "  [warn] 驅動 zip 沒有 pvmpower-devnode.ps1（舊版 zip？）-> pvmpower 不會載入"
+fi
+
 # SSH：setup 腳本一律放（沒 installer 會自我略過）；OpenSSH 安裝檔 + 公鑰視情況放。
 cp "$HERE/setup-ssh.ps1" "$WORK/OEM/DroidVM/setup-ssh.ps1"
 if [ -n "$OPENSSH_SRC" ] && [ -f "$OPENSSH_SRC" ]; then

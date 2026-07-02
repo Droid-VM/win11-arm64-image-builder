@@ -33,7 +33,7 @@ export OUT_QCOW="$HERE/win11-droidvm-final.qcow2"
 
 # --- 要安裝的驅動（ZIP/ = DRIVERS_DIR 解壓後的根目錄）---
 export DRIVER_DIR="ZIP/drivers"                            # 含各驅動子資料夾的目錄
-export DRIVER_INSTALL="NetKVM rdmapool vioinput viostor vioscsi"   # 只裝這幾個（留空=全部）
+export DRIVER_INSTALL="NetKVM rdmapool pvmpower vioinput viostor vioscsi"   # 只裝這幾個（留空=全部）
 export DRIVER_CERT="ZIP/DroidVM_Test.cer"                  # 指定簽章憑證（留空=從 .cat 自動萃取）
 
 # --- 帳號 / 遠端 ---
