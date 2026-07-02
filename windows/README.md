@@ -39,8 +39,8 @@ powershell -ExecutionPolicy Bypass -File windows\build_runme.ps1
 | `DRIVER_INSTALL` | 只離線注入這幾個子資料夾（留空=全部；**務必含 viostor/vioscsi 開機驅動**）|
 | `DRIVER_CERT` | 指定簽章憑證（如 `ZIP/DroidVM_Test.cer`；留空=從 `.cat` 自動萃取）|
 | `IMAGE_INDEX` | install.wim 版本 index（留空=列出讓你選）|
-| `USERNAME` | 帳號名。**因 Windows 內建 `$env:USERNAME` 衝突**，用一般變數 `$USERNAME` 或 `$env:DVM_USERNAME` |
-| `PASSWORD` | 帳號密碼（必填，空密碼擋 RDP/SSH；相容舊 `SSH_PASSWORD`）|
+| `DVM_USERNAME` | 帳號名。用 `$env:DVM_USERNAME`（**不是** Windows 內建的 `$env:USERNAME`＝目前登入者）|
+| `DVM_PASSWORD` | 帳號密碼（必填，空密碼擋 RDP/SSH；相容舊 `SSH_PASSWORD`）|
 | `SSH_PUBKEY` / `OPENSSH_SRC` | SSH 公鑰 / OpenSSH 安裝檔來源（留空 OPENSSH_SRC=不裝 SSH）|
 | `OUT_QCOW` | 產物路徑 |
 
@@ -61,6 +61,6 @@ powershell -ExecutionPolicy Bypass -File windows\build_runme.ps1
 - **RDP**：離線開好（步驟 6 設 `fDenyTSConnections=0`），首次開機只補防火牆。USER 為管理員，預設可 RDP。
 - **SSH**：`$env:OPENSSH_SRC` 指安裝檔來源（URL 下載 / 本地路徑複製），**預設抓 arm64 `.msi`**
   （一鍵裝好服務/host key/防火牆，也接受 `.zip`）；設空字串 = 不裝 SSH。
-- **帳號 / 密碼 / 公鑰走環境變數**：`$USERNAME`（帳號名，因 Windows 內建 `$env:USERNAME` 衝突，用一般變數或 `$env:DVM_USERNAME`）、`$env:PASSWORD`（預設 `DroidVM`，必填、空密碼會被擋；相容舊 `SSH_PASSWORD`）、`$env:SSH_PUBKEY`（設了才有金鑰登入）。也可寫進 config.ps1。
+- **帳號 / 密碼 / 公鑰走環境變數**：`$env:DVM_USERNAME`（帳號名，別用 Windows 內建的 `$env:USERNAME`）、`$env:DVM_PASSWORD`（預設 `DroidVM`，必填、空密碼會被擋；相容舊 `SSH_PASSWORD`）、`$env:SSH_PUBKEY`（設了才有金鑰登入）。也可寫進 config.ps1。
 - 自簽驅動仍靠 `testsigning`；匯入 Root/TrustedPublisher 只消掉「更新時的發行者警告」，不能因此關 testsigning。
 

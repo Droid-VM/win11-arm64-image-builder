@@ -204,13 +204,12 @@ $LETTER_WIN  = if ($env:LETTER_WIN)  { $env:LETTER_WIN }       elseif ($LETTER_W
 $DRIVER_DIR     = if ($env:DRIVER_DIR)     { $env:DRIVER_DIR }     elseif ($DRIVER_DIR)     { $DRIVER_DIR }     else { "ZIP/drivers" }
 $DRIVER_INSTALL = if ($env:DRIVER_INSTALL) { $env:DRIVER_INSTALL } elseif ($DRIVER_INSTALL) { $DRIVER_INSTALL } else { "" }
 $DRIVER_CERT    = if ($env:DRIVER_CERT)    { $env:DRIVER_CERT }    elseif ($DRIVER_CERT)    { $DRIVER_CERT }    else { "" }
-# 帳號名。注意：Windows 的 $env:USERNAME 是內建變數（目前登入者），不能拿來當設定。故用：
-#   config.ps1 / build_runme.ps1 的一般變數 $USERNAME（子scope 會繼承），或非內建的 $env:DVM_USERNAME。
-# 兩者皆未設 -> 預設 USER。
+# 帳號名。用 $env:DVM_USERNAME（不能用 Windows 內建的 $env:USERNAME＝目前登入者）；也可用 config.ps1
+# 的一般變數 $USERNAME。皆未設 -> 預設 USER。
 $USERNAME     = if ($env:DVM_USERNAME) { $env:DVM_USERNAME } elseif ($USERNAME) { $USERNAME } else { "USER" }
-# 帳號密碼：RDP/SSH 的網路登入不接受空密碼（Windows 預設 LimitBlankPasswordUse=1）。用 @@PASSWORD@@
-# token 注入 unattend.xml（見第 8 步）。PASSWORD(對照 macOS) 優先，相容舊的 SSH_PASSWORD。
-$PASSWORD     = if ($env:PASSWORD)     { $env:PASSWORD }     elseif ($env:SSH_PASSWORD) { $env:SSH_PASSWORD } elseif ($PASSWORD) { $PASSWORD } elseif ($SSH_PASSWORD) { $SSH_PASSWORD } else { "DroidVM" }
+# 帳號密碼：RDP/SSH 的網路登入不接受空密碼（Windows 預設 LimitBlankPasswordUse=1）。用 $env:DVM_PASSWORD
+# （@@PASSWORD@@ token 注入 unattend.xml，見第 8 步；相容舊的 SSH_PASSWORD）。
+$PASSWORD     = if ($env:DVM_PASSWORD) { $env:DVM_PASSWORD } elseif ($env:SSH_PASSWORD) { $env:SSH_PASSWORD } elseif ($PASSWORD) { $PASSWORD } elseif ($SSH_PASSWORD) { $SSH_PASSWORD } else { "DroidVM" }
 # SSH 公鑰（可多把，用換行分隔）；空 = 只密碼登入。走環境變數，不落地到 inputs\。
 $SSH_PUBKEY   = if ($env:SSH_PUBKEY)   { $env:SSH_PUBKEY }      elseif ($SSH_PUBKEY)   { $SSH_PUBKEY }        else { "" }
 # OpenSSH 安裝檔來源：URL(build 時下載) 或本地路徑(複製)。預設抓 arm64 .msi。空字串 = 不裝 SSH(僅 RDP)。
