@@ -64,9 +64,13 @@ cp "$HERE/debloat.ps1" "$WORK/OEM/DroidVM/debloat.ps1"
 # （INF 注入不會產生 devnode）。腳本由驅動 zip 根目錄提供；舊 zip 沒有就跳過（autounattend
 # 端也有 if exist 防呆）。
 ZIPROOT="$(dirname "$DRIVER_DIR")"
-if [ -f "$ZIPROOT/pvmpower-devnode.ps1" ]; then
-  cp "$ZIPROOT/pvmpower-devnode.ps1" "$WORK/OEM/DroidVM/pvmpower-devnode.ps1"
-  echo "[pvmpower] staged pvmpower-devnode.ps1"
+PVM_DEVNODE=""
+for c in "$ZIPROOT/pvmpower-devnode.ps1" "$ZIPROOT/.install_scripts/pvmpower-devnode.ps1"; do
+  [ -f "$c" ] && { PVM_DEVNODE="$c"; break; }
+done
+if [ -n "$PVM_DEVNODE" ]; then
+  cp "$PVM_DEVNODE" "$WORK/OEM/DroidVM/pvmpower-devnode.ps1"
+  echo "[pvmpower] staged pvmpower-devnode.ps1 (from $PVM_DEVNODE)"
 else
   echo "  [warn] 驅動 zip 沒有 pvmpower-devnode.ps1（舊版 zip？）-> pvmpower 不會載入"
 fi

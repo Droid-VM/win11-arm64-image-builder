@@ -428,10 +428,13 @@ exit
     $stage = "$W\DroidVM"
     New-Item -ItemType Directory -Force $stage | Out-Null
     Copy-Item (Join-Path $HERE "setup-ssh.ps1") "$stage\setup-ssh.ps1" -Force
-    # pvmpower devnode：ROOT\PVMPOWER 要在首次開機用 SetupAPI 建（INF 注入不產生 devnode）。腳本由
-    # 驅動 zip 根目錄提供；沒有就跳過（unattend 端有 if exist 防呆）。對照 macOS 的 02-make-iso.sh。
-    $pvmDevnode = Join-Path $zipRoot "pvmpower-devnode.ps1"
-    if (Test-Path $pvmDevnode) { Copy-Item $pvmDevnode "$stage\pvmpower-devnode.ps1" -Force; Write-Host "[pvmpower] staged pvmpower-devnode.ps1" }
+    # pvmpower devnode：pvmpower.sys 綁 root-enumerated ROOT\PVMPOWER，要在首次開機用 SetupAPI 建 devnode
+    # （INF 注入/DISM 都不會建 devnode），此腳本建好後 pnputil /scan-devices 讓 PnP 綁上離線注入的驅動。
+    # release zip 放在根目錄；原始碼在 .install_scripts/ —— 兩處都找。沒有就跳過（unattend 端有 if exist 防呆）。
+    $pvmDevnode = @("$zipRoot\pvmpower-devnode.ps1", "$zipRoot\.install_scripts\pvmpower-devnode.ps1") |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($pvmDevnode) { Copy-Item $pvmDevnode "$stage\pvmpower-devnode.ps1" -Force; Write-Host "[pvmpower] staged pvmpower-devnode.ps1 (from $pvmDevnode)" }
+    else { Write-Host "  [warn] 驅動 zip 無 pvmpower-devnode.ps1 -> pvmpower 不會建立 devnode（沒用 pvmpower 可忽略）" -ForegroundColor DarkYellow }
     # OpenSSH 安裝檔：$OPENSSH_SRC 可為 URL(下載到 files\) 或本地路徑；空 = 不裝 SSH。解析後複製進映像。
     # 建議 arm64 .msi（一鍵裝好服務/host key/防火牆），也接受 .zip。非致命：拿不到就只設 RDP。
     if ($OPENSSH_SRC) {
