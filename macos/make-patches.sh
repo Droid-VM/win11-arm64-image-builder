@@ -12,8 +12,7 @@
 # =====================================================================
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
-OUT="${OUT_DIR:-$ROOT/files/patches}"
+OUT="${OUT_DIR:-$HERE/files/patches}"
 IMAGE_INDEX="${IMAGE_INDEX:-1}"   # 由 build.sh 偵測/選定後傳入；預設 1 = Enterprise LTSC
 mkdir -p "$OUT"
 

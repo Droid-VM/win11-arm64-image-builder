@@ -3,9 +3,9 @@
 # common.sh — 檔案類輸入的統一解析（給 build.sh source）。
 #   規則：URL -> 下載到 files/ 再使用；本地路徑 -> 直接使用。
 #   zip 的解壓縮屬「使用檔案」的內部流程（也放在 files/），與是不是 URL 無關。
-# 需要呼叫端先設好 $ROOT。
+# 需要呼叫端先設好 $HERE（macos/）。中間檔+快取都放 $FILES = macos/files。
 # =====================================================================
-FILES="${FILES:-$ROOT/files}"
+FILES="${FILES:-$HERE/files}"
 
 # resolve_file <url-or-path> [save-as]
 #   URL  -> 下載到 files/<save-as>（save-as 省略則取 URL 檔名），回傳該路徑

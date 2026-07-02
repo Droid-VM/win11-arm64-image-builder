@@ -7,4 +7,4 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libwin-hivex-perl wimtools python3 mount qemu-utils kpartx fdisk ca-certificates \
  && rm -rf /var/lib/apt/lists/*
-WORKDIR /work/macos
+WORKDIR /work

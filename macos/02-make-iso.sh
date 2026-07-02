@@ -8,7 +8,7 @@
 # =====================================================================
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+FILES="${FILES:-$HERE/files}"; mkdir -p "$FILES"   # 中間檔都放 macos/files
 
 # 檔案類變數由 build.sh 解析並 export（URL 已下載到 files/、zip 已解壓、皆為絕對路徑）。
 # 若要單獨執行本檔，請自行先 export 這些絕對路徑（或改用 build_runme.sh）。
@@ -16,7 +16,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 : "${DRIVER_DIR:?DRIVER_DIR 未設}"
 : "${BCD_PATCHED:?BCD_PATCHED 未設}"
 : "${BCD_TEMPLATE:?BCD_TEMPLATE 未設}"
-OUT_ISO="${OUT_ISO:-$ROOT/win11-droidvm-setup.iso}"
+OUT_ISO="${OUT_ISO:-$FILES/win11-droidvm-setup.iso}"
 WINPE_DRIVERS="${WINPE_DRIVERS:-viostor vioscsi}"
 SWM_SIZE_MB="${SWM_SIZE_MB:-3800}"
 DRIVER_INSTALL="${DRIVER_INSTALL:-}"   # 要安裝的驅動子資料夾（空=全部）

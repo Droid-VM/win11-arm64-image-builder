@@ -4,7 +4,7 @@
 # testsigning/nointegritychecks 帶過去（實測 build 出來的 BCD 是 0 hits）。少了 testsigning，
 # 第一次開機 winload 會擋掉自簽的 viostor(開機關鍵儲存驅動) -> INACCESSIBLE_BOOT_DEVICE -> reboot loop。
 # 故在「套用映像後、第一次開進系統前」離線補這個 BCD。
-#   用法（03 呼叫）：docker run ... droidvm-patcher bash /work/macos/patch-esp-bcd.sh /work/win11-droidvm.qcow2
+#   用法（03 呼叫）：docker run -v macos:/work ... droidvm-patcher bash /work/patch-esp-bcd.sh /work/files/win11-droidvm.qcow2
 set -euo pipefail
 QCOW="${1:?qcow2 path (container path, e.g. /work/win11-droidvm.qcow2)}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

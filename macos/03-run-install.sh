@@ -11,11 +11,11 @@
 # =====================================================================
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+FILES="${FILES:-$HERE/files}"; mkdir -p "$FILES"   # 中間檔（setup ISO / 工作 qcow2 / NVRAM / qmp / log）都放 macos/files
 # 變數由 build.sh / build_runme.sh 提供（環境變數）。
 
-SETUP_ISO="${SETUP_ISO:-$ROOT/win11-droidvm-setup.iso}"
-QCOW="${QCOW:-$ROOT/win11-droidvm.qcow2}"
+SETUP_ISO="${SETUP_ISO:-$FILES/win11-droidvm-setup.iso}"
+QCOW="${QCOW:-$FILES/win11-droidvm.qcow2}"
 DISK_SIZE="${DISK_SIZE:-40G}"; MEM="${MEM:-8G}"; SMP="${SMP:-6}"
 # 顯示模式：BACKGROUND=true(預設)=headless(VNC)；false=原生 qemu 視窗(-display cocoa，要在 Mac 桌面 Terminal 跑)。
 # 直接設 DISPLAY_OPT 可完全覆蓋。auto-click 走 QMP，兩種模式都有效。
@@ -33,9 +33,9 @@ command -v qemu-system-aarch64 >/dev/null || { echo "需要 qemu：brew install 
 BREW="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
 CODE=""; for c in "$BREW/share/qemu/edk2-aarch64-code.fd" /usr/local/share/qemu/edk2-aarch64-code.fd; do [ -f "$c" ] && CODE="$c" && break; done
 [ -n "$CODE" ] || { echo "找不到 edk2-aarch64-code.fd（brew install qemu）"; exit 1; }
-VARS="$ROOT/edk2-arm-vars.fd"; [ -f "$VARS" ] || dd if=/dev/zero of="$VARS" bs=1m count=64 2>/dev/null
+VARS="$FILES/edk2-arm-vars.fd"; [ -f "$VARS" ] || dd if=/dev/zero of="$VARS" bs=1m count=64 2>/dev/null
 [ -f "$QCOW" ] || qemu-img create -f qcow2 "$QCOW" "$DISK_SIZE"
-QMP="$ROOT/qmp.sock"
+QMP="$FILES/qmp.sock"
 case "$DISPLAY_OPT" in *vnc*) VNC_NOTE=" (VNC: open vnc://127.0.0.1:5905)";; *) VNC_NOTE="";; esac
 echo "[qemu] HVF accel, BACKGROUND=$BACKGROUND, display=${DISPLAY_OPT}${VNC_NOTE}"
 
@@ -66,7 +66,7 @@ start_qemu() {
       -qmp "unix:$QMP,server,nowait" $DISPLAY_OPT &
   fi
   QEMU_PID=$!
-  python3 "$HERE/auto-click-prompt.py" "$QMP" >"$ROOT/clicker.log" 2>&1 &
+  python3 "$HERE/auto-click-prompt.py" "$QMP" >"$FILES/clicker.log" 2>&1 &
   CLICK_PID=$!
 }
 stop_qemu() {
@@ -98,8 +98,9 @@ echo "[bcd] === 離線補 ESP BCD testsigning ==="
 command -v docker >/dev/null || { echo "缺 docker（BCD patch 需要）— brew install colima docker"; exit 1; }
 colima status >/dev/null 2>&1 || colima start
 docker build -q -t droidvm-patcher "$HERE" >/dev/null
-docker run --rm --privileged -v "$ROOT:/work" droidvm-patcher \
-  bash /work/macos/patch-esp-bcd.sh "/work/$(basename "$QCOW")"
+# 掛 macos/ -> /work（scripts 在 /work，中間檔在 /work/files）
+docker run --rm --privileged -v "$HERE:/work" droidvm-patcher \
+  bash /work/patch-esp-bcd.sh "/work/files/$(basename "$QCOW")"
 
 # ---- Phase B：只從磁碟開機、跑完 OOBE/FirstLogon ----
 echo "[qemu] === Phase B：磁碟開機、跑完 OOBE/FirstLogon（會自動關機）==="

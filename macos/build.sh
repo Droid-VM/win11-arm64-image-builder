@@ -74,8 +74,8 @@ DRIVER_DIR="${DRIVER_DIR/#ZIP/$ZIP}"
 if [ -z "${BCD_PATCHED:-}" ] || [ -z "${BCD_TEMPLATE:-}" ]; then
   echo "[build] === 1/4 產生 testsigning BCD（Colima 容器）==="
   bash "$HERE/00-make-patches.sh" "$SRC_ISO"
-  BCD_PATCHED="$ROOT/files/patches/bcd-patched"
-  BCD_TEMPLATE="$ROOT/files/patches/bcd-template-patched"
+  BCD_PATCHED="$FILES/patches/bcd-patched"
+  BCD_TEMPLATE="$FILES/patches/bcd-template-patched"
 fi
 BCD_PATCHED="$(resolve_file "$BCD_PATCHED" "bcd-patched")"
 BCD_TEMPLATE="$(resolve_file "$BCD_TEMPLATE" "bcd-template-patched")"
@@ -96,7 +96,7 @@ echo "[build] === 3/4 HVF 安裝（全自動，跑完自動關機）==="
 bash "$HERE/03-run-install.sh"
 
 echo "[build] === 4/4 壓縮 qcow2 ==="
-OUT_QCOW="${OUT_QCOW:-$ROOT/win11-droidvm-final.qcow2}"
-qemu-img convert -O qcow2 "$ROOT/win11-droidvm.qcow2" "$OUT_QCOW"
+OUT_QCOW="${OUT_QCOW:-$HERE/win11-droidvm-final.qcow2}"   # 最終產物放 macos/
+qemu-img convert -O qcow2 "$FILES/win11-droidvm.qcow2" "$OUT_QCOW"
 sz=$(ls -lh "$OUT_QCOW" | awk '{print $5}')
 echo "[build] 完成 ✅  -> $OUT_QCOW ($sz)"

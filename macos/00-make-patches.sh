@@ -7,12 +7,12 @@
 # =====================================================================
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/.." && pwd)"
+FILES="${FILES:-$HERE/files}"
 
 ISO="${1:-${SRC_ISO:-}}"
 [ -n "$ISO" ] && [ -f "$ISO" ] || { echo "[patches] 需要有效的 ISO（第一個參數或 SRC_ISO）: '$ISO'"; exit 1; }
 ISO_ABS="$(cd "$(dirname "$ISO")" && pwd)/$(basename "$ISO")"
-OUTDIR="$ROOT/files/patches"; mkdir -p "$OUTDIR"
+OUTDIR="$FILES/patches"; mkdir -p "$OUTDIR"
 
 # 已產好就跳過（FORCE=1 強制重做）
 if [ -z "${FORCE:-}" ] && [ -f "$OUTDIR/bcd-patched" ] && [ -f "$OUTDIR/bcd-template-patched" ]; then
@@ -34,12 +34,12 @@ docker build -q -t droidvm-patcher "$HERE" >/dev/null
 
 echo "[patches] 容器內產生 testsigning BCD ..."
 # --privileged：make-patches.sh 用 loop mount 讀 ISO（Colima 的 Lima VM 有真 kernel + loop）。
-# 掛：整個專案 -> /work（拿 macos/ 腳本、寫 files/patches）；ISO -> /iso.iso。
+# 掛 macos/ -> /work（scripts 在 /work，寫 /work/files/patches）；ISO -> /iso.iso。
 docker run --rm --privileged \
-  -v "$ROOT:/work" \
+  -v "$HERE:/work" \
   -v "$ISO_ABS:/iso.iso:ro" \
   -e SRC_ISO=/iso.iso -e OUT_DIR=/work/files/patches -e "IMAGE_INDEX=${IMAGE_INDEX:-1}" \
-  -w /work/macos \
+  -w /work \
   droidvm-patcher ./make-patches.sh
 
 [ -f "$OUTDIR/bcd-patched" ] && [ -f "$OUTDIR/bcd-template-patched" ] \
