@@ -69,20 +69,27 @@ function Resolve-InputFile([string]$Src, [string]$SaveAs = "") {
     return $Src
 }
 
-function Resolve-DriverDir([string]$Src) {
+# 驅動 zip/資料夾來源 -> 解壓後的「根目錄」。DRIVER_DIR / DRIVER_CERT 用 ZIP/ 前綴引用此根（對照 macOS）。
+function Resolve-ZipRoot([string]$Src) {
     $p = Resolve-InputFile $Src "gunyah-arm64-drivers.zip"
-    if (Test-Path $p -PathType Container) { $dir = $p }
-    elseif ($p -like "*.zip") {
+    if (Test-Path $p -PathType Container) { return $p }
+    if ($p -like "*.zip") {
         $dir = Join-Path (Join-Path $ROOT "files") ([IO.Path]::GetFileNameWithoutExtension($p))
         if (Test-Path $dir) { Write-Host "[files] 已解壓: $dir" }
         else { Write-Host "[files] 解壓 $p -> $dir"; Expand-Archive $p -DestinationPath $dir -Force }
+        return $dir
     }
-    else { throw "驅動來源不是資料夾也不是 zip: $p" }
-    if (Test-Path (Join-Path $dir "drivers")) { $dir = Join-Path $dir "drivers" }   # zip 頂層常是 drivers/
-    if (-not (Get-ChildItem $dir -Recurse -Filter *.inf -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-        throw "no .inf found in driver folder: $dir"
-    }
-    return $dir
+    throw "驅動來源不是資料夾也不是 zip: $p"
+}
+
+# 展開 DRIVER_DIR / DRIVER_CERT 開頭的 ZIP 前綴 -> zip 解壓根（對照 macOS 的 ${VAR/#ZIP/$ZIP}）。
+# 例：ZIP/drivers -> <root>\drivers；ZIP/DroidVM_Test.cer -> <root>\DroidVM_Test.cer；非 ZIP 前綴 -> 原樣。
+function Expand-ZipToken([string]$Path, [string]$ZipRoot) {
+    if (-not $Path) { return $Path }
+    if ($Path -eq 'ZIP') { return $ZipRoot }
+    # 字串串接（不用 Join-Path，避免 'C:' 被當成 PSDrive 解析）；ZIP 後面的斜線統一成反斜線。
+    if ($Path -match '^ZIP[\\/](.*)$') { return ($ZipRoot.TrimEnd('\', '/') + '\' + ($Matches[1] -replace '/', '\')) }
+    return $Path
 }
 
 # --- Helpers ---
@@ -192,9 +199,18 @@ $DISK_MB     = if ($env:DISK_SIZE_MB){ [int]$env:DISK_SIZE_MB }elseif ($DISK_SIZ
 $OUT_QCOW    = if ($env:OUT_QCOW)    { $env:OUT_QCOW }         elseif ($OUT_QCOW)    { $OUT_QCOW }         else { Join-Path $ROOT "win11-droidvm-final.qcow2" }
 $LETTER_ESP  = if ($env:LETTER_ESP)  { $env:LETTER_ESP }       elseif ($LETTER_ESP)  { $LETTER_ESP }       else { Get-FreeDriveLetter }
 $LETTER_WIN  = if ($env:LETTER_WIN)  { $env:LETTER_WIN }       elseif ($LETTER_WIN)  { $LETTER_WIN }       else { Get-FreeDriveLetter @($LETTER_ESP) }
-# 給 USER 的密碼：RDP/SSH 的網路登入不接受空密碼（Windows 預設 LimitBlankPasswordUse=1），
-# 所以一定要有真密碼。用 @@PASSWORD@@ token 注入 unattend.xml（見第 8 步）。改這裡或設 env/config。
-$SSH_PASSWORD = if ($env:SSH_PASSWORD) { $env:SSH_PASSWORD }   elseif ($SSH_PASSWORD) { $SSH_PASSWORD }     else { "DroidVM" }
+# 驅動安裝清單/憑證（對照 macOS）：DRIVER_DIR=含各驅動子資料夾的目錄（ZIP/ = 驅動 zip 解壓根）；
+# DRIVER_INSTALL=只離線注入這幾個子資料夾(空=全部)；DRIVER_CERT=指定簽章憑證(空=從 .cat 自動萃取)。
+$DRIVER_DIR     = if ($env:DRIVER_DIR)     { $env:DRIVER_DIR }     elseif ($DRIVER_DIR)     { $DRIVER_DIR }     else { "ZIP/drivers" }
+$DRIVER_INSTALL = if ($env:DRIVER_INSTALL) { $env:DRIVER_INSTALL } elseif ($DRIVER_INSTALL) { $DRIVER_INSTALL } else { "" }
+$DRIVER_CERT    = if ($env:DRIVER_CERT)    { $env:DRIVER_CERT }    elseif ($DRIVER_CERT)    { $DRIVER_CERT }    else { "" }
+# 帳號名。注意：Windows 的 $env:USERNAME 是內建變數（目前登入者），不能拿來當設定。故用：
+#   config.ps1 / build_runme.ps1 的一般變數 $USERNAME（子scope 會繼承），或非內建的 $env:DVM_USERNAME。
+# 兩者皆未設 -> 預設 USER。
+$USERNAME     = if ($env:DVM_USERNAME) { $env:DVM_USERNAME } elseif ($USERNAME) { $USERNAME } else { "USER" }
+# 帳號密碼：RDP/SSH 的網路登入不接受空密碼（Windows 預設 LimitBlankPasswordUse=1）。用 @@PASSWORD@@
+# token 注入 unattend.xml（見第 8 步）。PASSWORD(對照 macOS) 優先，相容舊的 SSH_PASSWORD。
+$PASSWORD     = if ($env:PASSWORD)     { $env:PASSWORD }     elseif ($env:SSH_PASSWORD) { $env:SSH_PASSWORD } elseif ($PASSWORD) { $PASSWORD } elseif ($SSH_PASSWORD) { $SSH_PASSWORD } else { "DroidVM" }
 # SSH 公鑰（可多把，用換行分隔）；空 = 只密碼登入。走環境變數，不落地到 inputs\。
 $SSH_PUBKEY   = if ($env:SSH_PUBKEY)   { $env:SSH_PUBKEY }      elseif ($SSH_PUBKEY)   { $SSH_PUBKEY }        else { "" }
 # OpenSSH 安裝檔來源：URL(build 時下載) 或本地路徑(複製)。預設抓 arm64 .msi。空字串 = 不裝 SSH(僅 RDP)。
@@ -236,8 +252,16 @@ function Cleanup {
 
 try {
     # === 1) Resolve driver source (URL -> files\ 下載; 本地 zip/資料夾 -> 直接用; zip -> 解壓到 files\) ===
-    $drvDir = Resolve-DriverDir $DRIVERS_DIR
-    Write-Host "[drivers] using: $drvDir"
+    # 驅動 zip -> 解壓根(ZIP)；DRIVER_DIR/DRIVER_CERT 的 ZIP/ 前綴展開成該根目錄。
+    $zipRoot     = Resolve-ZipRoot $DRIVERS_DIR
+    $DRIVER_DIR  = Expand-ZipToken $DRIVER_DIR  $zipRoot
+    $DRIVER_CERT = Expand-ZipToken $DRIVER_CERT $zipRoot
+    if (-not (Test-Path $DRIVER_DIR -PathType Container)) { throw "找不到驅動資料夾 DRIVER_DIR: $DRIVER_DIR" }
+    if ($DRIVER_CERT -and -not (Test-Path $DRIVER_CERT)) { throw "找不到 DRIVER_CERT: $DRIVER_CERT" }
+    $drvDir = $DRIVER_DIR
+    $instShow = if ($DRIVER_INSTALL) { $DRIVER_INSTALL } else { "(all)" }
+    $certShow = if ($DRIVER_CERT) { Split-Path $DRIVER_CERT -Leaf } else { "(auto from .cat)" }
+    Write-Host "[drivers] dir=$drvDir  install=$instShow  cert=$certShow"
 
     # === 2) Mount ISO, get install.wim, resolve image index ===
     Show-CommandLine "Mount-DiskImage" @("-ImagePath", $SRC_ISO, "-PassThru")
@@ -279,8 +303,20 @@ exit
     Invoke-ExternalCommand -FilePath "dism" -ArgumentList @("/Apply-Image", "/ImageFile:$wim", "/Index:$IMAGE_INDEX", "/ApplyDir:$W\") -OutNull -What "dism /Apply-Image"
 
     # === 5) Offline driver injection (no signature prompt) ===
-    Write-Host "[dism] injecting drivers offline ..."
-    Invoke-ExternalCommand -FilePath "dism" -ArgumentList @("/Image:$W\", "/Add-Driver", "/Driver:$drvDir", "/Recurse", "/ForceUnsigned") -OutNull -What "dism /Add-Driver"
+    # 只離線注入 DRIVER_INSTALL 指定的驅動子資料夾（空=整個 $drvDir /Recurse）。/ForceUnsigned 免簽章提示。
+    # 注意：開機關鍵驅動（viostor/vioscsi）務必包含在 DRIVER_INSTALL，否則映像開不了機。
+    if ($DRIVER_INSTALL) {
+        foreach ($d in ($DRIVER_INSTALL -split '\s+' | Where-Object { $_ })) {
+            $sub = Join-Path $drvDir $d
+            if (Test-Path $sub -PathType Container) {
+                Write-Host "[dism] inject driver: $d"
+                Invoke-ExternalCommand -FilePath "dism" -ArgumentList @("/Image:$W\", "/Add-Driver", "/Driver:$sub", "/Recurse", "/ForceUnsigned") -OutNull -What "dism /Add-Driver $d"
+            } else { Write-Host "  [warn] 要安裝的驅動 $d 不存在於 $drvDir" -ForegroundColor DarkYellow }
+        }
+    } else {
+        Write-Host "[dism] injecting all drivers offline ..."
+        Invoke-ExternalCommand -FilePath "dism" -ArgumentList @("/Image:$W\", "/Add-Driver", "/Driver:$drvDir", "/Recurse", "/ForceUnsigned") -OutNull -What "dism /Add-Driver"
+    }
 
     # === 5b) Extract driver signer certs (offline) -> stage for first-boot trust ===
     # 離線注入(/ForceUnsigned)不需憑證，但那只讓「這批」驅動裝得進去。日後「互動式」更新驅動
@@ -288,24 +324,31 @@ exit
     # 發行者」。這裡從 .cat 萃取每個獨立簽章者，staging 到 C:\DroidVM\certs，unattend specialize 再
     # 匯入 Root+TrustedPublisher(對照 macos/autounattend.xml)。注意：這只消掉「安裝提示」，自簽驅動
     # 開機載入仍靠 BCD testsigning(第 7 步)，不能因此關掉 testsigning。
-    Write-Host "[certs] extracting driver signer certs offline ..."
+    Write-Host "[certs] staging driver signer cert(s) offline ..."
     $certDir = "$W\DroidVM\certs"
     New-Item -ItemType Directory -Force $certDir | Out-Null
-    $seenThumb = @{}
-    # .cat 最可靠：catalog-signed 驅動的 .sys 在 host 上未註冊 catalog 會顯示未簽，.cat 本身讀得到簽章者
-    Get-ChildItem $drvDir -Recurse -Include *.cat, *.sys, *.dll, *.exe -ErrorAction SilentlyContinue | ForEach-Object {
-        try {
-            $cert = (Get-AuthenticodeSignature $_.FullName).SignerCertificate
-            if ($cert -and -not $seenThumb.ContainsKey($cert.Thumbprint)) {
-                $seenThumb[$cert.Thumbprint] = $true
-                Export-Certificate -Cert $cert -FilePath (Join-Path $certDir "$($cert.Thumbprint).cer") | Out-Null
-            }
-        } catch {}
+    if ($DRIVER_CERT) {
+        # 指定憑證：直接放，unattend specialize 匯入 Root+TrustedPublisher（對照 macOS 的 DRIVER_CERT）。
+        Copy-Item $DRIVER_CERT (Join-Path $certDir (Split-Path $DRIVER_CERT -Leaf)) -Force
+        Write-Host "[certs] 用指定的 DRIVER_CERT: $(Split-Path $DRIVER_CERT -Leaf)"
+    } else {
+        # 沒指定 -> 從驅動 .cat/.sys 自動萃取所有唯一簽章者
+        # (.cat 最可靠：catalog-signed 驅動的 .sys 在 host 上未註冊 catalog 會顯示未簽，.cat 本身讀得到簽章者)
+        $seenThumb = @{}
+        Get-ChildItem $drvDir -Recurse -Include *.cat, *.sys, *.dll, *.exe -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $cert = (Get-AuthenticodeSignature $_.FullName).SignerCertificate
+                if ($cert -and -not $seenThumb.ContainsKey($cert.Thumbprint)) {
+                    $seenThumb[$cert.Thumbprint] = $true
+                    Export-Certificate -Cert $cert -FilePath (Join-Path $certDir "$($cert.Thumbprint).cer") | Out-Null
+                }
+            } catch {}
+        }
+        # 也收 driver 包內直接附的 *.cer（如 DroidVM_Test.cer）
+        Get-ChildItem $drvDir -Recurse -Filter *.cer -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName (Join-Path $certDir $_.Name) -Force }
+        Write-Host "[certs] 從驅動 .cat 自動萃取 $($seenThumb.Count) 張憑證 -> $certDir"
     }
-    # 也收 driver 包內直接附的 *.cer（如 DroidVM_Test.cer）
-    Get-ChildItem $drvDir -Recurse -Filter *.cer -ErrorAction SilentlyContinue |
-        ForEach-Object { Copy-Item $_.FullName (Join-Path $certDir $_.Name) -Force }
-    Write-Host "[certs] staged $($seenThumb.Count) signer cert(s) -> $certDir"
 
     # === 6) Debloat (offline removal of provisioned Appx) ===
     Write-Host "[debloat] removing extra provisioned Appx offline ..."
@@ -373,8 +416,10 @@ exit
     Show-CommandLine "New-Item" @("-ItemType", "Directory", "-Force", "$W\Windows\Panther")
     New-Item -ItemType Directory -Force "$W\Windows\Panther" | Out-Null
     $unattendSrc = Join-Path $HERE "unattend.xml"
-    # 注入 USER 密碼（@@PASSWORD@@ token）。用 .NET 寫 UTF-8 無 BOM，跟原檔一致。
-    $unattendXml = (Get-Content $unattendSrc -Raw).Replace('@@PASSWORD@@', $SSH_PASSWORD)
+    # 注入帳號/密碼（@@USERNAME@@ / @@PASSWORD@@ token）。XML-escape 讓帳密含 &<>" 時 XML 仍合法
+    # （對照 macOS 的 perl 版）。用 .NET 寫 UTF-8 無 BOM，跟原檔一致。
+    $esc = { param($s) $s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;').Replace('"','&quot;') }
+    $unattendXml = (Get-Content $unattendSrc -Raw).Replace('@@USERNAME@@', (& $esc $USERNAME)).Replace('@@PASSWORD@@', (& $esc $PASSWORD))
     Show-CommandLine "Set-Content" @("$W\Windows\Panther\unattend.xml", "(unattend.xml + password)")
     [System.IO.File]::WriteAllText("$W\Windows\Panther\unattend.xml", $unattendXml, (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "[oobe] unattend.xml placed (first boot creates USER, autologon, imports certs)"
@@ -384,6 +429,10 @@ exit
     $stage = "$W\DroidVM"
     New-Item -ItemType Directory -Force $stage | Out-Null
     Copy-Item (Join-Path $HERE "setup-ssh.ps1") "$stage\setup-ssh.ps1" -Force
+    # pvmpower devnode：ROOT\PVMPOWER 要在首次開機用 SetupAPI 建（INF 注入不產生 devnode）。腳本由
+    # 驅動 zip 根目錄提供；沒有就跳過（unattend 端有 if exist 防呆）。對照 macOS 的 02-make-iso.sh。
+    $pvmDevnode = Join-Path $zipRoot "pvmpower-devnode.ps1"
+    if (Test-Path $pvmDevnode) { Copy-Item $pvmDevnode "$stage\pvmpower-devnode.ps1" -Force; Write-Host "[pvmpower] staged pvmpower-devnode.ps1" }
     # OpenSSH 安裝檔：$OPENSSH_SRC 可為 URL(下載到 files\) 或本地路徑；空 = 不裝 SSH。解析後複製進映像。
     # 建議 arm64 .msi（一鍵裝好服務/host key/防火牆），也接受 .zip。非致命：拿不到就只設 RDP。
     if ($OPENSSH_SRC) {

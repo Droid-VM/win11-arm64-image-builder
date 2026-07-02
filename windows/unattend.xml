@@ -53,16 +53,16 @@
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">
-            <Name>USER</Name>
+            <Name>@@USERNAME@@</Name>
             <Group>Administrators</Group>
-            <DisplayName>USER</DisplayName>
+            <DisplayName>@@USERNAME@@</DisplayName>
             <Password><Value>@@PASSWORD@@</Value><PlainText>true</PlainText></Password>
           </LocalAccount>
         </LocalAccounts>
       </UserAccounts>
 
       <AutoLogon>
-        <Username>USER</Username>
+        <Username>@@USERNAME@@</Username>
         <Enabled>true</Enabled>
         <LogonCount>999</LogonCount>
         <Password><Value>@@PASSWORD@@</Value><PlainText>true</PlainText></Password>
@@ -75,7 +75,7 @@
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
           <Order>2</Order><Description>persistent autologon user</Description>
-          <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName /t REG_SZ /d USER /f</CommandLine>
+          <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName /t REG_SZ /d @@USERNAME@@ /f</CommandLine>
         </SynchronousCommand>
         <!-- 有密碼後，autologon 要能撐過 unattend AutoLogon 的 LogonCount 才需 DefaultPassword。
              注意：這是「明文」存進登錄檔（Winlogon 的已知取捨）。不想要就刪掉這條，改吃 999 次上限。 -->
@@ -87,6 +87,12 @@
         <SynchronousCommand wcm:action="add">
           <Order>4</Order><Description>setup OpenSSH + RDP firewall</Description>
           <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File C:\DroidVM\setup-ssh.ps1</CommandLine>
+        </SynchronousCommand>
+        <!-- pvmpower 綁 root-enumerated ROOT\PVMPOWER：devnode 要在首次開機用 SetupAPI 建立（INF 注入
+             不會產生 devnode）。腳本由驅動 zip 根目錄提供；沒有就跳過（if exist 防呆）。 -->
+        <SynchronousCommand wcm:action="add">
+          <Order>5</Order><Description>pvmpower devnode</Description>
+          <CommandLine>cmd /c if exist C:\DroidVM\pvmpower-devnode.ps1 powershell -NoProfile -ExecutionPolicy Bypass -File C:\DroidVM\pvmpower-devnode.ps1</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
     </component>
