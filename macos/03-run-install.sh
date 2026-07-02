@@ -99,6 +99,7 @@ echo "[bcd] === 離線補 ESP BCD testsigning ==="
 command -v docker >/dev/null || { echo "缺 docker（BCD patch 需要）— brew install colima docker"; exit 1; }
 colima status >/dev/null 2>&1 || colima start
 docker build -q -t droidvm-patcher "$HERE" >/dev/null
+docker image prune -f >/dev/null 2>&1 || true   # 清掉 Dockerfile 改動留下的 dangling image
 # 掛 macos/ -> /work（scripts 在 /work，中間檔在 /work/files）
 docker run --rm --privileged -v "$HERE:/work" droidvm-patcher \
   bash /work/patch-esp-bcd.sh "/work/files/$(basename "$QCOW")"
