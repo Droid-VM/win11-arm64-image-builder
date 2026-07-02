@@ -2,7 +2,12 @@
 .env
 windows/config.ps1
 
+# 快取與雜項
+__pycache__/
+*.pyc
+
 # 使用者輸入與產物（大檔，不入庫）
+files/
 inputs/*.iso
 inputs/drivers/
 inputs/drivers.zip

@@ -21,22 +21,31 @@
 
 ## 用法
 ```powershell
-# 1) 設定（PowerShell 原生：build.ps1 會 dot-source windows\config.ps1）
-copy windows\build_from_zip.ps1 windows\build_from_zip.ps1   # 編輯 $SRC_ISO（必填）、$DRIVERS_DIR（預設抓 dev release）
+# 1) 編輯 windows\build_runme.ps1 的變數（$SRC_ISO、$DRIVERS_DIR、$OUT_QCOW …）
+#    檔案類變數可填 URL（自動下載到 files\）或本地路徑；zip 會自動解壓到 files\。
 
 # 2) 執行（會自動提權到系統管理員）
-powershell -ExecutionPolicy Bypass -File windows\build_from_zip.ps1
+powershell -ExecutionPolicy Bypass -File windows\build_runme.ps1
 #   -> win11-droidvm-final.qcow2
 ```
 
 ## 流程（build.ps1）
-1. 解析驅動來源（URL→下載 dev release zip / 本地 zip / 資料夾）
+1. 解析驅動來源（URL→下載到 files\ / 本地 zip→解壓到 files\ / 本地資料夾直接用）
 2. 掛載 ISO 取 `install.wim`
 3. 建 + 掛 VHDX，GPT 分割 ESP(FAT32)+MSR+Windows(NTFS)
 4. `dism /Apply-Image` 套用映像
 5. `dism /Add-Driver /Recurse /ForceUnsigned` **離線注入驅動**
-6. 離線移除多餘 provisioned Appx（debloat）
+   - 5b. 從 `.cat` 萃取簽章者憑證 → staging 到 `C:\DroidVM\certs`（specialize 匯入 Root+TrustedPublisher，日後更新驅動不跳警告）
+6. 離線移除多餘 provisioned Appx（debloat）；離線改 SYSTEM hive：關 hibernate、**開 RDP**（fDenyTSConnections=0）
 7. `bcdboot` 做開機檔，`bcdedit /store` 開 testsigning + nointegritychecks
-8. 放入 `unattend.xml`（首次開機 OOBE 建 USER、autologon）
+8. 放入 `unattend.xml`（注入密碼；首次開機 OOBE 建 USER、autologon、匯入憑證）
+   - 8c. staging `setup-ssh.ps1` + OpenSSH 安裝檔 + `authorized_keys`（來自 `$SSH_PUBKEY`）→ `C:\DroidVM`（首次開機裝 sshd、開防火牆）
 9. 卸載 VHDX → `qemu-img convert` 成 qcow2
+
+## 遠端連線（RDP + OpenSSH）
+- **RDP**：離線開好（步驟 6 設 `fDenyTSConnections=0`），首次開機只補防火牆。USER 為管理員，預設可 RDP。
+- **SSH**：`$env:OPENSSH_SRC` 指安裝檔來源（URL 下載 / 本地路徑複製），**預設抓 arm64 `.msi`**
+  （一鍵裝好服務/host key/防火牆，也接受 `.zip`）；設空字串 = 不裝 SSH。
+- **密碼 / 公鑰走環境變數**：`$env:SSH_PASSWORD`（預設 `DroidVM`，必填、空密碼會被擋）、`$env:SSH_PUBKEY`（設了才有金鑰登入）。三者也可寫進 config.ps1。
+- 自簽驅動仍靠 `testsigning`；匯入 Root/TrustedPublisher 只消掉「更新時的發行者警告」，不能因此關 testsigning。
 

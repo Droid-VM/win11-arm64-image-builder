@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =====================================================================
 # build.sh — Win11 ARM64 開機 qcow2「一鍵」建置（Apple Silicon Mac）
-# 前置：1) inputs/ 放 Win11 ARM64 ISO + drivers/（或 drivers.zip）+ 憑證
-#       2) 已在 Linux 端跑過 linux/make-patches.sh，產生 patches/
-# 流程：02 封裝 ISO -> 03 HVF 安裝（全自動，跑完自動關機）-> qemu-img 壓縮
+# 由 build_runme.sh 提供變數（或自行 export 後執行）。檔案類變數可為 URL 或本地路徑：
+#   URL -> 下載到 files/ 再用；本地路徑 -> 直接用；zip -> 解壓到 files/。
+# 流程：解析輸入 -> 02 封裝 ISO -> 03 HVF 安裝（自動關機）-> qemu-img 壓縮。
 # 需求：brew install qemu wimlib xorriso
 # =====================================================================
 set -euo pipefail
@@ -11,22 +11,92 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 export LC_ALL="${LC_ALL:-en_US.UTF-8}" LANG="${LANG:-en_US.UTF-8}"
-[ -f "$ROOT/load-env.sh" ] && . "$ROOT/load-env.sh"   # 自動載入 .env
+. "$HERE/common.sh"
 
 for t in qemu-system-aarch64 wimlib-imagex xorriso; do
   command -v "$t" >/dev/null || { echo "缺 $t — brew install qemu wimlib xorriso"; exit 1; }
 done
-[ -f "$ROOT/patches/bcd-template-patched" ] || { echo "缺 patches/ — 請先在 Linux 端跑 linux/make-patches.sh"; exit 1; }
 
-# 驅動來源（URL / 本地 zip / 資料夾）由 02-make-iso.sh 解析：
-# URL 或 zip 會正規化成 inputs/drivers.zip，再解開成 inputs/drivers/。
+# 解析 install.wim 的版本 index：IMAGE_INDEX 空或 0 -> 列出版本讓使用者選；有值 -> 驗證後採用。
+# 用 wimlib-imagex 讀 ISO 內的 install.wim（macOS 有 wimlib，不需 Windows 的 DISM）。回傳選定 index 到 stdout。
+resolve_image_index() {
+  local iso="$1" want="${IMAGE_INDEX:-0}" attach dev mnt wim list valid sel
+  attach="$(hdiutil attach -readonly -nobrowse -noverify "$iso")"
+  dev="$(printf '%s\n' "$attach" | grep -oE '/dev/disk[0-9]+' | head -1)"
+  mnt="$(printf '%s\n' "$attach" | grep -oE '/Volumes/.*' | head -1)"
+  wim="$mnt/sources/install.wim"
+  [ -f "$wim" ] || { hdiutil detach "$dev" >/dev/null 2>&1 || true; echo "找不到 install.wim" >&2; return 1; }
+  list="$(wimlib-imagex info "$wim" | awk '
+    /^Index:/ {idx=$2}
+    /^Name:/  {n=$0; sub(/^Name:[[:space:]]*/,"",n); print idx"\t"n}')"
+  valid="$(printf '%s\n' "$list" | cut -f1)"
+  hdiutil detach "$dev" >/dev/null 2>&1 || true
+  [ -n "$valid" ] || { echo "install.wim 沒有任何版本" >&2; return 1; }
 
-echo "[build] === 1/3 封裝安裝 ISO ==="
+  if [ "$want" -gt 0 ] 2>/dev/null; then
+    printf '%s\n' "$valid" | grep -qx "$want" && { printf '%s\n' "$want"; return 0; }
+    echo "IMAGE_INDEX=$want 不在此 ISO；可選：$(echo $valid)" >&2; return 1
+  fi
+  echo "install.wim 版本：" >&2
+  printf '%s\n' "$list" | while IFS="$(printf '\t')" read -r i n; do echo "  [$i] $n" >&2; done
+  [ -t 0 ] || { echo "IMAGE_INDEX 未設且非互動；請填其中之一：$(echo $valid)" >&2; return 1; }
+  while :; do
+    printf "選擇 image index: " >&2; read -r sel
+    printf '%s\n' "$valid" | grep -qx "$sel" && { printf '%s\n' "$sel"; return 0; }
+    echo "  無效，請從這些選：$(echo $valid)" >&2
+  done
+}
+
+# --- 必要變數（建議用 build_runme.sh 設定）---
+: "${SRC_ISO:?請設 SRC_ISO（Win11 ARM64 ISO 的 URL 或路徑）— 建議用 build_runme.sh}"
+: "${DRIVERS_DIR:?請設 DRIVERS_DIR（驅動 zip/資料夾 的 URL 或路徑）}"
+
+# --- 解析檔案類輸入成絕對路徑，export 給 02/03（不再掃描 inputs/）---
+SRC_ISO="$(resolve_file "$SRC_ISO" "win11-arm64.iso")"
+
+# --- install.wim 版本 index（空/0 = 偵測並詢問）。patches 與 autounattend 都會用到 ---
+IMAGE_INDEX="$(resolve_image_index "$SRC_ISO")"
+export IMAGE_INDEX   # 讓後面呼叫的 00-make-patches.sh 也拿得到
+echo "[build] IMAGE_INDEX = $IMAGE_INDEX"
+
+# --- 驅動：DRIVERS_DIR（zip/資料夾）解壓/解析成「ZIP 根目錄」；DRIVER_DIR / DRIVER_CERT
+#     開頭的 ZIP 前綴展開成該根目錄。之後只安裝 DRIVER_INSTALL 指定的驅動 + DRIVER_CERT。---
+ZIP="$(resolve_dir "$(resolve_file "$DRIVERS_DIR" "gunyah-arm64-drivers.zip")")"
+DRIVER_DIR="${DRIVER_DIR:-ZIP/drivers}"
+DRIVER_CERT="${DRIVER_CERT:-}"
+DRIVER_DIR="${DRIVER_DIR/#ZIP/$ZIP}"
+[ -n "$DRIVER_CERT" ] && DRIVER_CERT="${DRIVER_CERT/#ZIP/$ZIP}"
+[ -d "$DRIVER_DIR" ] || { echo "找不到驅動資料夾 DRIVER_DIR: $DRIVER_DIR"; exit 1; }
+[ -z "$DRIVER_CERT" ] || [ -f "$DRIVER_CERT" ] || { echo "找不到 DRIVER_CERT: $DRIVER_CERT"; exit 1; }
+
+# --- testsigning BCD：沒指定就用 Colima 容器自動產生（原本的 Linux 端流程已併進來）。
+#     有指定（URL 或路徑）就照用，交給下面的 resolve_file。---
+if [ -z "${BCD_PATCHED:-}" ] || [ -z "${BCD_TEMPLATE:-}" ]; then
+  echo "[build] === 1/4 產生 testsigning BCD（Colima 容器）==="
+  bash "$HERE/00-make-patches.sh" "$SRC_ISO"
+  BCD_PATCHED="$ROOT/files/patches/bcd-patched"
+  BCD_TEMPLATE="$ROOT/files/patches/bcd-template-patched"
+fi
+BCD_PATCHED="$(resolve_file "$BCD_PATCHED" "bcd-patched")"
+BCD_TEMPLATE="$(resolve_file "$BCD_TEMPLATE" "bcd-template-patched")"
+
+# --- 帳號 / SSH：USERNAME/PASSWORD 注入 autounattend；OPENSSH_SRC 解析後 staging（空=不裝 SSH）---
+USERNAME="${USERNAME:-USER}"
+PASSWORD="${PASSWORD:-}"
+SSH_PUBKEY="${SSH_PUBKEY:-}"
+OPENSSH_SRC="${OPENSSH_SRC:-}"
+[ -n "$OPENSSH_SRC" ] && OPENSSH_SRC="$(resolve_file "$OPENSSH_SRC")"
+
+export SRC_ISO IMAGE_INDEX DRIVER_DIR DRIVER_INSTALL DRIVER_CERT BCD_PATCHED BCD_TEMPLATE \
+       USERNAME PASSWORD SSH_PUBKEY OPENSSH_SRC FILES
+
+echo "[build] === 2/4 封裝安裝 ISO ==="
 bash "$HERE/02-make-iso.sh"
-echo "[build] === 2/3 HVF 安裝（全自動，跑完自動關機）==="
+echo "[build] === 3/4 HVF 安裝（全自動，跑完自動關機）==="
 bash "$HERE/03-run-install.sh"
 
-echo "[build] === 3/3 壓縮 qcow2 ==="
-qemu-img convert -O qcow2 "$ROOT/win11-droidvm.qcow2" "$ROOT/win11-droidvm-final.qcow2"
-sz=$(ls -lh "$ROOT/win11-droidvm-final.qcow2" | awk '{print $5}')
-echo "[build] 完成 ✅  -> $ROOT/win11-droidvm-final.qcow2 ($sz)"
+echo "[build] === 4/4 壓縮 qcow2 ==="
+OUT_QCOW="${OUT_QCOW:-$ROOT/win11-droidvm-final.qcow2}"
+qemu-img convert -O qcow2 "$ROOT/win11-droidvm.qcow2" "$OUT_QCOW"
+sz=$(ls -lh "$OUT_QCOW" | awk '{print $5}')
+echo "[build] 完成 ✅  -> $OUT_QCOW ($sz)"

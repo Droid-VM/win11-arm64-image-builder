@@ -50,6 +50,41 @@ $ROOT = Split-Path $HERE -Parent
 $cfgFile = Join-Path $HERE "config.ps1"
 if (Test-Path $cfgFile) { . $cfgFile }
 
+# --- 檔案類輸入解析：URL -> 下載到 files\ 再用；本地路徑 -> 直接用；zip -> 解壓到 files\（使用檔案的內部流程）---
+function Resolve-InputFile([string]$Src, [string]$SaveAs = "") {
+    if ($Src -match '^https?://') {
+        $files = Join-Path $ROOT "files"
+        New-Item -ItemType Directory -Force $files | Out-Null
+        if (-not $SaveAs) { $SaveAs = Split-Path ($Src -replace '\?.*$', '') -Leaf }
+        $dst = Join-Path $files $SaveAs
+        if (Test-Path $dst) { Write-Host "[files] 已存在，略過下載: $dst" }
+        else {
+            Write-Host "[files] 下載 $Src -> $dst"
+            Invoke-WebRequest -Uri $Src -OutFile "$dst.part" -UseBasicParsing
+            Move-Item "$dst.part" $dst -Force
+        }
+        return $dst
+    }
+    if (-not (Test-Path $Src)) { throw "找不到檔案: $Src" }
+    return $Src
+}
+
+function Resolve-DriverDir([string]$Src) {
+    $p = Resolve-InputFile $Src "gunyah-arm64-drivers.zip"
+    if (Test-Path $p -PathType Container) { $dir = $p }
+    elseif ($p -like "*.zip") {
+        $dir = Join-Path (Join-Path $ROOT "files") ([IO.Path]::GetFileNameWithoutExtension($p))
+        if (Test-Path $dir) { Write-Host "[files] 已解壓: $dir" }
+        else { Write-Host "[files] 解壓 $p -> $dir"; Expand-Archive $p -DestinationPath $dir -Force }
+    }
+    else { throw "驅動來源不是資料夾也不是 zip: $p" }
+    if (Test-Path (Join-Path $dir "drivers")) { $dir = Join-Path $dir "drivers" }   # zip 頂層常是 drivers/
+    if (-not (Get-ChildItem $dir -Recurse -Filter *.inf -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        throw "no .inf found in driver folder: $dir"
+    }
+    return $dir
+}
+
 # --- Helpers ---
 # Native commands (diskpart/dism/bcdboot/bcdedit/qemu-img) do NOT honor $ErrorActionPreference,
 # so a non-zero exit is otherwise silently swallowed by "| Out-Null". Call this right after them.
@@ -151,18 +186,26 @@ function Resolve-ImageIndex([string]$wim, [int]$wanted) {
 
 # --- Resolve config: environment variable  >  config.ps1 value  >  built-in default ---
 $SRC_ISO     = if ($env:SRC_ISO)     { $env:SRC_ISO }          elseif ($SRC_ISO)     { $SRC_ISO }          else { $null }
-$DRIVERS_DIR = if ($env:DRIVERS_DIR) { $env:DRIVERS_DIR }      elseif ($DRIVERS_DIR) { $DRIVERS_DIR }      else { "https://github.com/HuJK-Data/gunyah-guest-drivers-windows" }
+$DRIVERS_DIR = if ($env:DRIVERS_DIR) { $env:DRIVERS_DIR }      elseif ($DRIVERS_DIR) { $DRIVERS_DIR }      else { "https://github.com/Droid-VM/gunyah-guest-drivers-windows/releases/download/dev/gunyah-arm64-drivers.zip" }
 $IMAGE_INDEX = if ($env:IMAGE_INDEX) { [int]$env:IMAGE_INDEX } elseif ($IMAGE_INDEX) { [int]$IMAGE_INDEX } else { 0 }       # 0 = list editions and prompt
 $DISK_MB     = if ($env:DISK_SIZE_MB){ [int]$env:DISK_SIZE_MB }elseif ($DISK_SIZE_MB){ [int]$DISK_SIZE_MB }else { 40960 }
 $OUT_QCOW    = if ($env:OUT_QCOW)    { $env:OUT_QCOW }         elseif ($OUT_QCOW)    { $OUT_QCOW }         else { Join-Path $ROOT "win11-droidvm-final.qcow2" }
 $LETTER_ESP  = if ($env:LETTER_ESP)  { $env:LETTER_ESP }       elseif ($LETTER_ESP)  { $LETTER_ESP }       else { Get-FreeDriveLetter }
 $LETTER_WIN  = if ($env:LETTER_WIN)  { $env:LETTER_WIN }       elseif ($LETTER_WIN)  { $LETTER_WIN }       else { Get-FreeDriveLetter @($LETTER_ESP) }
+# 給 USER 的密碼：RDP/SSH 的網路登入不接受空密碼（Windows 預設 LimitBlankPasswordUse=1），
+# 所以一定要有真密碼。用 @@PASSWORD@@ token 注入 unattend.xml（見第 8 步）。改這裡或設 env/config。
+$SSH_PASSWORD = if ($env:SSH_PASSWORD) { $env:SSH_PASSWORD }   elseif ($SSH_PASSWORD) { $SSH_PASSWORD }     else { "DroidVM" }
+# SSH 公鑰（可多把，用換行分隔）；空 = 只密碼登入。走環境變數，不落地到 inputs\。
+$SSH_PUBKEY   = if ($env:SSH_PUBKEY)   { $env:SSH_PUBKEY }      elseif ($SSH_PUBKEY)   { $SSH_PUBKEY }        else { "" }
+# OpenSSH 安裝檔來源：URL(build 時下載) 或本地路徑(複製)。預設抓 arm64 .msi。空字串 = 不裝 SSH(僅 RDP)。
+$OPENSSH_SRC  = if ($env:OPENSSH_SRC)  { $env:OPENSSH_SRC }     elseif ($OPENSSH_SRC)  { $OPENSSH_SRC }       else { "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-ARM64-v10.0.0.0.msi" }
 Write-Host "[disk] drive letters: ESP=$LETTER_ESP Windows=$LETTER_WIN"
 
 foreach ($t in @("dism", "bcdboot", "diskpart", "qemu-img")) {
     if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { throw "$t not found (qemu-img needs QEMU for Windows installed and on PATH)" }
 }
-if (-not $SRC_ISO -or -not (Test-Path $SRC_ISO)) { throw "Invalid SRC_ISO: set the Win11 ARM64 ISO path in config.ps1" }
+if (-not $SRC_ISO) { throw "Invalid SRC_ISO: set the Win11 ARM64 ISO (URL 或本地路徑) in config.ps1 / build_from_zip.ps1" }
+$SRC_ISO = Resolve-InputFile $SRC_ISO "win11-arm64.iso"
 
 $WORK = Join-Path $env:TEMP ("droidvm-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 Show-CommandLine "New-Item" @("-ItemType", "Directory", "-Force", $WORK)
@@ -192,36 +235,8 @@ function Cleanup {
 }
 
 try {
-    # === 1) Resolve driver source (URL / local zip / folder) ===
-    $drvDir = ""
-    if ($DRIVERS_DIR -match '^https?://') {
-        $repo = ($DRIVERS_DIR -replace '^https?://github.com/', '') -replace '\.git$', '' -replace '/+$', ''
-        Write-Host "[drivers] fetching dev release driver zip from $repo ..."
-        $relUri = "https://api.github.com/repos/$repo/releases/tags/dev"
-        Show-CommandLine "Invoke-RestMethod" @("-Uri", $relUri, "-Headers", '@{ "User-Agent" = "droidvm" }')
-        $rel = Invoke-RestMethod -Uri $relUri -Headers @{ "User-Agent" = "droidvm" }
-        $asset = $rel.assets | Where-Object { $_.name -like "*.zip" } | Select-Object -First 1
-        if (-not $asset) { throw "dev release has no .zip asset (repo=$repo)" }
-        $zip = Join-Path $WORK "drivers.zip"
-        Show-CommandLine "Invoke-WebRequest" @("-Uri", $asset.browser_download_url, "-OutFile", $zip, "-UseBasicParsing")
-        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -UseBasicParsing
-        $drvExtractDir = Join-Path $WORK "drv"
-        Show-CommandLine "Expand-Archive" @($zip, "-DestinationPath", $drvExtractDir, "-Force")
-        Expand-Archive $zip -DestinationPath $drvExtractDir -Force
-        $drvDir = $drvExtractDir
-    }
-    elseif ($DRIVERS_DIR -like "*.zip") {
-        $drvExtractDir = Join-Path $WORK "drv"
-        Show-CommandLine "Expand-Archive" @($DRIVERS_DIR, "-DestinationPath", $drvExtractDir, "-Force")
-        Expand-Archive $DRIVERS_DIR -DestinationPath $drvExtractDir -Force
-        $drvDir = $drvExtractDir
-    }
-    else { $drvDir = $DRIVERS_DIR }
-    # zip top level is often drivers/, descend to the folder that actually contains *.inf
-    if (Test-Path (Join-Path $drvDir "drivers")) { $drvDir = Join-Path $drvDir "drivers" }
-    if (-not (Get-ChildItem $drvDir -Recurse -Filter *.inf -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-        throw "no .inf found in driver folder: $drvDir"
-    }
+    # === 1) Resolve driver source (URL -> files\ 下載; 本地 zip/資料夾 -> 直接用; zip -> 解壓到 files\) ===
+    $drvDir = Resolve-DriverDir $DRIVERS_DIR
     Write-Host "[drivers] using: $drvDir"
 
     # === 2) Mount ISO, get install.wim, resolve image index ===
@@ -267,6 +282,31 @@ exit
     Write-Host "[dism] injecting drivers offline ..."
     Invoke-ExternalCommand -FilePath "dism" -ArgumentList @("/Image:$W\", "/Add-Driver", "/Driver:$drvDir", "/Recurse", "/ForceUnsigned") -OutNull -What "dism /Add-Driver"
 
+    # === 5b) Extract driver signer certs (offline) -> stage for first-boot trust ===
+    # 離線注入(/ForceUnsigned)不需憑證，但那只讓「這批」驅動裝得進去。日後「互動式」更新驅動
+    # (Device Manager / pnputil / 廠商 installer) 會比對 TrustedPublisher；憑證不在 -> 跳「無法驗證
+    # 發行者」。這裡從 .cat 萃取每個獨立簽章者，staging 到 C:\DroidVM\certs，unattend specialize 再
+    # 匯入 Root+TrustedPublisher(對照 macos/autounattend.xml)。注意：這只消掉「安裝提示」，自簽驅動
+    # 開機載入仍靠 BCD testsigning(第 7 步)，不能因此關掉 testsigning。
+    Write-Host "[certs] extracting driver signer certs offline ..."
+    $certDir = "$W\DroidVM\certs"
+    New-Item -ItemType Directory -Force $certDir | Out-Null
+    $seenThumb = @{}
+    # .cat 最可靠：catalog-signed 驅動的 .sys 在 host 上未註冊 catalog 會顯示未簽，.cat 本身讀得到簽章者
+    Get-ChildItem $drvDir -Recurse -Include *.cat, *.sys, *.dll, *.exe -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $cert = (Get-AuthenticodeSignature $_.FullName).SignerCertificate
+            if ($cert -and -not $seenThumb.ContainsKey($cert.Thumbprint)) {
+                $seenThumb[$cert.Thumbprint] = $true
+                Export-Certificate -Cert $cert -FilePath (Join-Path $certDir "$($cert.Thumbprint).cer") | Out-Null
+            }
+        } catch {}
+    }
+    # 也收 driver 包內直接附的 *.cer（如 DroidVM_Test.cer）
+    Get-ChildItem $drvDir -Recurse -Filter *.cer -ErrorAction SilentlyContinue |
+        ForEach-Object { Copy-Item $_.FullName (Join-Path $certDir $_.Name) -Force }
+    Write-Host "[certs] staged $($seenThumb.Count) signer cert(s) -> $certDir"
+
     # === 6) Debloat (offline removal of provisioned Appx) ===
     Write-Host "[debloat] removing extra provisioned Appx offline ..."
     $keep = 'VCLibs|NET\.Native|UI\.Xaml|Store|SecHealth|Photos|Notepad|Terminal|WindowsTerminal'
@@ -279,6 +319,49 @@ exit
         }
     } catch { Write-Host "  (skipping debloat: $($_.Exception.Message))" -ForegroundColor DarkYellow }
 
+    # === 6b) Offline shrink: WinSxS ResetBase + disable hibernate ===
+    # 對應 macOS debloat 的 WinSxS 壓實與關 hibernate，這裡用離線版（不需開機）。
+    # 純為縮小映像，失敗不影響可用性，故全部設為非致命。
+    Write-Host "[debloat] WinSxS component cleanup (ResetBase, offline) ..."
+    try {
+        Invoke-ExternalCommand -FilePath "dism" -ArgumentList @("/Image:$W\", "/Cleanup-Image", "/StartComponentCleanup", "/ResetBase") -OutNull -What "dism /Cleanup-Image /ResetBase"
+    } catch {
+        Write-Host "  (skipping ResetBase: $($_.Exception.Message))" -ForegroundColor DarkYellow
+    }
+
+    Write-Host "[debloat] disabling hibernate offline (no hiberfil.sys) ..."
+    # 離線改 SYSTEM hive：HibernateEnabled=0 -> 首次開機不會建立 hiberfil.sys。
+    $sysHive = "$W\Windows\System32\config\SYSTEM"
+    $hiveLoaded = $false
+    try {
+        Invoke-ExternalCommand -FilePath "reg" -ArgumentList @("load", "HKLM\DVMOFF", $sysHive) -OutNull -What "reg load SYSTEM hive"
+        $hiveLoaded = $true
+        foreach ($cs in @("ControlSet001", "ControlSet002")) {
+            $pk = "HKLM\DVMOFF\$cs\Control\Power"
+            reg query $pk *> $null
+            if ($LASTEXITCODE -eq 0) {
+                Show-CommandLine "reg add" @($pk, "/v", "HibernateEnabled", "/t", "REG_DWORD", "/d", "0", "/f")
+                reg add $pk /v HibernateEnabled        /t REG_DWORD /d 0 /f *> $null
+                reg add $pk /v HibernateEnabledDefault /t REG_DWORD /d 0 /f *> $null
+            }
+            # 啟用 RDP（離線）：fDenyTSConnections=0。防火牆規則另在首次開機由 setup-ssh.ps1 開啟。
+            $tk = "HKLM\DVMOFF\$cs\Control\Terminal Server"
+            reg query $tk *> $null
+            if ($LASTEXITCODE -eq 0) {
+                Show-CommandLine "reg add" @($tk, "/v", "fDenyTSConnections", "/t", "REG_DWORD", "/d", "0", "/f")
+                reg add $tk /v fDenyTSConnections /t REG_DWORD /d 0 /f *> $null
+            }
+        }
+    } catch {
+        Write-Host "  (skipping hibernate-off: $($_.Exception.Message))" -ForegroundColor DarkYellow
+    } finally {
+        # hive 一定要 unload，否則第 9 步 dismount VHDX 會失敗。
+        if ($hiveLoaded) {
+            [gc]::Collect(); [gc]::WaitForPendingFinalizers()
+            reg unload HKLM\DVMOFF *> $null
+        }
+    }
+
     # === 7) Boot files + BCD (bcdboot uses the ARM64 bootmgr from the image) ===
     Write-Host "[boot] bcdboot + BCD ..."
     Invoke-ExternalCommand -FilePath "bcdboot" -ArgumentList @("$W\Windows", "/s", $S, "/f", "UEFI") -OutNull -What "bcdboot"
@@ -290,9 +373,50 @@ exit
     Show-CommandLine "New-Item" @("-ItemType", "Directory", "-Force", "$W\Windows\Panther")
     New-Item -ItemType Directory -Force "$W\Windows\Panther" | Out-Null
     $unattendSrc = Join-Path $HERE "unattend.xml"
-    Show-CommandLine "Copy-Item" @($unattendSrc, "$W\Windows\Panther\unattend.xml", "-Force")
-    Copy-Item $unattendSrc "$W\Windows\Panther\unattend.xml" -Force
-    Write-Host "[oobe] unattend.xml placed (first boot creates USER, autologon)"
+    # 注入 USER 密碼（@@PASSWORD@@ token）。用 .NET 寫 UTF-8 無 BOM，跟原檔一致。
+    $unattendXml = (Get-Content $unattendSrc -Raw).Replace('@@PASSWORD@@', $SSH_PASSWORD)
+    Show-CommandLine "Set-Content" @("$W\Windows\Panther\unattend.xml", "(unattend.xml + password)")
+    [System.IO.File]::WriteAllText("$W\Windows\Panther\unattend.xml", $unattendXml, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "[oobe] unattend.xml placed (first boot creates USER, autologon, imports certs)"
+
+    # === 8c) Stage SSH payload into image (offline) ===
+    # setup-ssh.ps1 由 unattend FirstLogonCommands 於首次開機執行（裝 sshd 服務需線上註冊）。
+    $stage = "$W\DroidVM"
+    New-Item -ItemType Directory -Force $stage | Out-Null
+    Copy-Item (Join-Path $HERE "setup-ssh.ps1") "$stage\setup-ssh.ps1" -Force
+    # OpenSSH 安裝檔：$OPENSSH_SRC 可為 URL(下載到 files\) 或本地路徑；空 = 不裝 SSH。解析後複製進映像。
+    # 建議 arm64 .msi（一鍵裝好服務/host key/防火牆），也接受 .zip。非致命：拿不到就只設 RDP。
+    if ($OPENSSH_SRC) {
+        try {
+            $sshLocal = Resolve-InputFile $OPENSSH_SRC
+            Copy-Item $sshLocal (Join-Path $stage (Split-Path $sshLocal -Leaf)) -Force
+            Write-Host "[ssh] staged $(Split-Path $sshLocal -Leaf)"
+        } catch {
+            Write-Host "[ssh] OpenSSH staging 失敗 -> 只設 RDP：$($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    } else {
+        Write-Host "[ssh] `$OPENSSH_SRC 空 -> 不裝 SSH（僅 RDP）" -ForegroundColor DarkYellow
+    }
+    # authorized_keys 由環境變數 $SSH_PUBKEY 提供（多把金鑰換行分隔），UTF-8 無 BOM + LF。
+    if ($SSH_PUBKEY) {
+        $akText = ($SSH_PUBKEY -replace "`r`n", "`n" -replace "`r", "`n").TrimEnd("`n") + "`n"
+        [System.IO.File]::WriteAllText("$stage\authorized_keys", $akText, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "[ssh] staged authorized_keys from `$SSH_PUBKEY (金鑰登入)"
+    } else {
+        Write-Host "[ssh] `$SSH_PUBKEY 未設 -> 僅密碼登入" -ForegroundColor DarkYellow
+    }
+
+    # === 8b) ReTrim so debloat/cleanup actually shrinks the image ===
+    # 對應 macOS 的 Optimize-Volume -ReTrim：把上面 debloat/ResetBase 釋放的 cluster
+    # unmap 掉。否則那些空間在 NTFS 雖標記 free，VHDX 裡仍是舊資料（非零），
+    # 第 9 步 qemu-img convert 會把它們一起複製進 qcow2 → 縮不掉。
+    Write-Host "[shrink] Optimize-Volume -ReTrim on $W ..."
+    try {
+        Show-CommandLine "Optimize-Volume" @("-DriveLetter", $LETTER_WIN, "-ReTrim")
+        Optimize-Volume -DriveLetter $LETTER_WIN -ReTrim -ErrorAction Stop
+    } catch {
+        Write-Host "  (ReTrim skipped: $($_.Exception.Message))" -ForegroundColor DarkYellow
+    }
 
     # === 9) Detach VHDX -> convert to qcow2 ===
     Cleanup; $vhdAttached = $false; $isoMounted = $false

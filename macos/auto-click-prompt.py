@@ -106,24 +106,24 @@ def is_boot_prompt(path):
 # 一次當後備（黑畫面按 Enter 無害）。套用映像後 reboot：已過開機窗不再按鍵 -> CD 提示逾時
 # fallthrough 到磁碟（不重裝迴圈）。
 MIN_PRESS_SECS = 6
-MAX_BOOT_SECS = 60
-t0 = time.time(); pressed = 0; fallback = 0
+MAX_BOOT_SECS = 90
+t0 = time.time(); pressed = 0
 while time.time() - t0 < MAX_BOOT_SECS:
+    bf = None
     try:
         cmd(f, {"execute": "screendump", "arguments": {"filename": PPM}})
-        if is_boot_prompt(PPM):
-            send_key("ret"); pressed += 1
-            print("auto-click: boot prompt -> Enter", flush=True)
-            time.sleep(0.8); continue
         bf = bright_frac(PPM)
-        if bf is not None and bf > 0.06 and (time.time() - t0) > MIN_PRESS_SECS:
-            break                                 # 非黑 Setup 畫面出現 -> 開機窗結束
-        if (bf is None or bf <= 0.06) and pressed == 0 and (time.time() - t0) > 8 and fallback < 6:
-            send_key("ret"); fallback += 1        # 後備：認不出但持續全黑，盲按一次
     except Exception:
         pass
-    time.sleep(0.8)
-print("auto-click: boot-press window done", flush=True)
+    # 非黑的 Setup 畫面出現 -> 停止按鍵，避免多按打到安裝畫面（"Installing Windows" 的 Cancel）
+    if bf is not None and bf > 0.06 and (time.time() - t0) > MIN_PRESS_SECS:
+        break
+    # 黑畫面（含只有 ~5s 的「Press any key to boot from CD」提示）-> 從 t=0 起每秒按一次 Space。
+    # Space 比 Enter/ESC 安全：不會誤觸 edk2 韌體選單；對「Press any key」一樣有效。
+    # 裝完後的 reboot 已過此開機窗、不再按鍵 -> CD 提示逾時 -> fallthrough 進磁碟（不重裝迴圈）。
+    send_key("spc"); pressed += 1
+    time.sleep(1.0)
+print("auto-click: boot-press window done (%d presses)" % pressed, flush=True)
 
 # 穩態：只在偵測到「驅動簽章紅色橫幅」時點「Install anyway」。
 # 注意：不要盲送 ESC——Setup（含新版 24H2 安裝 UI）期間亂送 ESC 會取消/重置安裝。

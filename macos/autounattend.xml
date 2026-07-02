@@ -86,7 +86,7 @@
           <InstallFrom>
             <MetaData wcm:action="add">
               <Key>/IMAGE/INDEX</Key>
-              <Value>2</Value>  <!-- 2 = Windows 11 IoT Enterprise LTSC -->
+              <Value>@@IMAGE_INDEX@@</Value>  <!-- 由 build.sh 偵測/選定後注入 -->
             </MetaData>
           </InstallFrom>
           <InstallTo><DiskID>0</DiskID><PartitionID>3</PartitionID></InstallTo>
@@ -150,20 +150,20 @@
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">
-            <Name>USER</Name>
+            <Name>@@USERNAME@@</Name>
             <Group>Administrators</Group>
-            <DisplayName>USER</DisplayName>
-            <Password><Value></Value><PlainText>true</PlainText></Password>
+            <DisplayName>@@USERNAME@@</DisplayName>
+            <Password><Value>@@PASSWORD@@</Value><PlainText>true</PlainText></Password>
           </LocalAccount>
         </LocalAccounts>
       </UserAccounts>
 
       <!-- 自動登入（一次即可進桌面；下面 FirstLogon 會把它設成永久）-->
       <AutoLogon>
-        <Username>USER</Username>
+        <Username>@@USERNAME@@</Username>
         <Enabled>true</Enabled>
-        <LogonCount>1</LogonCount>
-        <Password><Value></Value><PlainText>true</PlainText></Password>
+        <LogonCount>999</LogonCount>
+        <Password><Value>@@PASSWORD@@</Value><PlainText>true</PlainText></Password>
       </AutoLogon>
 
       <FirstLogonCommands>
@@ -188,15 +188,25 @@
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
           <Order>7</Order><Description>persistent autologon user</Description>
-          <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName /t REG_SZ /d USER /f</CommandLine>
+          <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName /t REG_SZ /d @@USERNAME@@ /f</CommandLine>
+        </SynchronousCommand>
+        <!-- 有密碼後，autologon 要撐過 AutoLogon 的 LogonCount 才需 DefaultPassword（明文存登錄檔的已知取捨）-->
+        <SynchronousCommand wcm:action="add">
+          <Order>8</Order><Description>persistent autologon password</Description>
+          <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword /t REG_SZ /d "@@PASSWORD@@" /f</CommandLine>
+        </SynchronousCommand>
+        <!-- 裝 OpenSSH Server + 佈署 authorized_keys（檔案由 02-make-iso.sh staging 到 C:\DroidVM）。沒 installer 就略過。 -->
+        <SynchronousCommand wcm:action="add">
+          <Order>9</Order><Description>setup OpenSSH</Description>
+          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File C:\DroidVM\setup-ssh.ps1</CommandLine>
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
-          <Order>8</Order><Description>debloat</Description>
+          <Order>10</Order><Description>debloat</Description>
           <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File C:\DroidVM\debloat.ps1</CommandLine>
         </SynchronousCommand>
         <!-- 全部完成後自動關機，qemu 乾淨退出 = qcow2 成品就緒 -->
         <SynchronousCommand wcm:action="add">
-          <Order>9</Order><Description>shutdown when done</Description>
+          <Order>11</Order><Description>shutdown when done</Description>
           <CommandLine>cmd /c shutdown /s /t 45 /c "DroidVM install complete"</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>

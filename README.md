@@ -10,29 +10,26 @@
 | 路線 | 環境 | 怎麼做 | 時間 |
 |---|---|---|---|
 | **A. windows/（DISM 離線）** | **單台 x64 Windows** | DISM 套用映像 + 離線注入驅動 + bcdboot/bcdedit，**不跑 Setup、不開 VM、不跳簽章提示** | ~5–10 分 |
-| **B. linux/ + macos/（Setup）** | Linux + Apple Silicon Mac | Linux 產 BCD patch（需 hivex）→ macOS 用 qemu HVF 跑 Setup 裝機 | ~30 分 |
+| **B. macos/（Setup）** | **單台 Apple Silicon Mac** | Colima 容器產 BCD patch（hivex）→ qemu HVF 跑 Setup 裝機 | ~30 分 |
 
-> **有 x64 Windows 就走 A，最快且最省事**；A 完全獨立、不需要 Linux 也不需要 macOS。
-> 沒有 Windows、只有 Mac/Linux 才走 B。兩條路線產物相同（可開機、已含驅動的 qcow2）。
+> **有 x64 Windows 就走 A，最快且最省事**；A 完全獨立、單機自足。
+> 只有 Mac 走 B：hivex 那步用 **Colima 容器**代跑，一樣單機自足（不再需要另一台 Linux）。
+> 兩條路線產物相同（可開機、已含驅動的 qcow2）。
 
 ```
-inputs/    你放：Win11 ARM64 ISO（驅動可不放，預設自動從 GitHub dev release 下載）
-windows/   【路線 A】在 x64 Windows 跑 build.ps1 -> 直接產 win11-droidvm-final.qcow2（自足）
-linux/     【路線 B】在 Linux 跑 make-patches.sh -> 產出 patches/（兩個 testsigning BCD）
-macos/     【路線 B】在 Apple Silicon Mac 跑 build.sh -> 產出 win11-droidvm-final.qcow2
-patches/   路線 B：linux 端輸出（macOS 端讀取；macOS 沒 hivex 所以在 Linux 先做）
-.env       路線 B 本機設定（從 .env.example 複製；腳本啟動自動載入，已 gitignore）
-           （路線 A 改用 windows/config.ps1，見 windows/README.md）
+windows/   【路線 A】改 build_runme.ps1 變數後執行 -> 直接產 qcow2（自足）
+macos/     【路線 B】改 build_runme.sh 變數後執行 -> 自動產 patch + 裝機 -> qcow2
+           （make-patches.sh / Dockerfile / bcd-testsigning.py = Colima 容器代跑的 hivex 產 BCD）
+files/     兩路線共用快取：URL 下載 / zip 解壓 / BCD patch（已 gitignore）
 ```
+> 檔案類設定都在各自的 `build_runme.*`：填 URL 會自動下載到 `files/`，或填本地路徑。
 
 ## 設定
-- **路線 A（windows/）**：用 `windows\config.ps1`（從 `config.example.ps1` 複製，build.ps1 會 dot-source）。
-  優先序：環境變數 / CLI > config.ps1 > 預設。細節見 [`windows/README.md`](windows/README.md)。
-- **路線 B（linux/ + macos/）**：用專案根 `.env`，腳本啟動自動 `source`（已設的環境變數/CLI 優先）。
-  ```bash
-  cp .env.example .env   # 編輯需要的項目；不設就用預設
-  ```
-  主要變數：`SRC_ISO`（留空自動抓 inputs/*.iso）、`DRIVERS_DIR`、`MEM`/`SMP`/`DISK_SIZE`/`DISPLAY_OPT`。
+- **路線 A（windows/）**：改 `windows\build_runme.ps1` 的 `$env:...` 變數（或 `windows\config.ps1`）。
+  細節見 [`windows/README.md`](windows/README.md)。
+- **路線 B（macos/）**：改 `macos/build_runme.sh` 的 `export ...` 變數。
+  主要變數：`SRC_ISO`、`DRIVERS_DIR`、`DRIVER_DIR`/`DRIVER_INSTALL`/`DRIVER_CERT`、`OUT_QCOW`、
+  `MEM`/`SMP`/`DISK_SIZE`/`DISPLAY_OPT`。
 
 ### 驅動來源 `DRIVERS_DIR`（兩條路線共用的三選一邏輯）
 | 寫法 | 行為 |
@@ -55,22 +52,17 @@ powershell -ExecutionPolicy Bypass -File windows\build.ps1
 ```
 > 這條完全自足：用 Windows 內建 `dism`/`bcdboot`/`bcdedit`/`diskpart` 取代了路線 B 對 Linux hivex 與 macOS qemu 的依賴。
 
-## 用法 B — linux/ + macos/
-- 為什麼要分兩端：設 testsigning 必須改 BCD（registry hive 格式），靠 **hivex**——只有 Linux 方便；
-  但跑 Setup 要 **ARM64 原生加速**——Apple Silicon Mac 的 **qemu HVF** 最快。所以 Linux 只做
-  「小小的 BCD patch」（~25KB），其餘重活在 Mac。
+## 用法 B — macos/（單台 Mac）
+- 為什麼還需要 hivex：設 testsigning 必須改 BCD（registry hive 格式），靠 **hivex**——只有 Linux 方便；
+  跑 Setup 要 **ARM64 原生加速**——Apple Silicon Mac 的 **qemu HVF** 最快。所以 hivex 那「小小的 BCD
+  patch」（~25KB）改用 **Colima 容器**代跑，其餘重活在 Mac host（容器不需硬體加速，故無巢狀虛擬化問題）。
+- 需求：`brew install qemu wimlib xorriso colima docker`
 ```bash
-# 0) 設定（可選）
-cp .env.example .env        # 至少確認 ISO 與 DRIVERS_DIR；驅動預設自動下載
-
-# 1) 放輸入：inputs/<win11-arm64>.iso（驅動可不放，預設自動抓 dev release）
-
-# 2) Linux 端（需 apt install -y libhivex-bin wimtools）
-cd linux && ./make-patches.sh
-
-# 3) 同步整個專案到 Mac，於 Mac 端（需 brew install qemu wimlib xorriso）
-cd macos && ./build.sh
-#    -> ../win11-droidvm-final.qcow2
+# 編輯 macos/build_runme.sh 的變數（SRC_ISO / DRIVERS_DIR / OUT_QCOW），然後：
+bash macos/build_runme.sh
+#   - testsigning BCD 由 Colima 容器自動產生（macos/make-patches.sh 在容器內跑）
+#   - 檔案類變數填 URL 會自動下載到 files/，或填本地路徑
+#   -> win11-droidvm-final.qcow2
 ```
 
 ## 關鍵技術點
@@ -82,7 +74,7 @@ cd macos && ./build.sh
   Windows 原生工具搞定，**不需要 hivex**（這就是不需要 Linux 的原因）。
 - 健壯性：native 指令失敗即時中止（檢查 `$LASTEXITCODE`）、磁碟代號自動挑空的（避開 MountedDevices 殘留保留）。
 
-**路線 B（linux/ + macos/ Setup）**
+**路線 B（macos/ Setup）**
 - **第一次開機的 testsigning**：不能用 autounattend 設（windowsPE RunSynchronous 跑在
   套用映像「前」，bcdedit 會失敗中止 Setup）。改成 **patch install.wim 裡的
   `BCD-Template`**（bcdboot 建 BCD 的範本）→ 裝好就自帶 testsigning。

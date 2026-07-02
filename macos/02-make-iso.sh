@@ -1,77 +1,36 @@
 #!/usr/bin/env bash
 # =====================================================================
 # 02-make-iso.sh  (在 Apple Silicon Mac 執行)
-# 用 inputs/ 的 Win11 ARM64 ISO + 驅動 + linux 端產的 patches/，
-# 封裝無人值守安裝 ISO（注入：autounattend、$WinpeDriver$ 開機驅動、
-# 全驅動 $OEM$、安裝媒體 testsigning BCD、install.wim 的 testsigning BCD-Template）。
+# 用 build.sh 解析好的 Win11 ARM64 ISO + 驅動 + testsigning BCD，封裝無人值守安裝 ISO
+# （注入：autounattend、$WinpeDriver$ 開機驅動、DRIVER_INSTALL 指定驅動 + DRIVER_CERT 到 $OEM$、
+#  安裝媒體 testsigning BCD、install.wim 的 testsigning BCD-Template）。
 # 需求：brew install wimlib xorriso
 # =====================================================================
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-IN="$ROOT/inputs"; PATCHES="$ROOT/patches"
-[ -f "$ROOT/load-env.sh" ] && . "$ROOT/load-env.sh"   # 自動載入 .env
 
-SRC_ISO="${SRC_ISO:-$(ls "$IN"/*arm64*dvd*.iso "$IN"/*ARM64*.iso "$IN"/*.iso 2>/dev/null | head -1 || true)}"
+# 檔案類變數由 build.sh 解析並 export（URL 已下載到 files/、zip 已解壓、皆為絕對路徑）。
+# 若要單獨執行本檔，請自行先 export 這些絕對路徑（或改用 build_runme.sh）。
+: "${SRC_ISO:?SRC_ISO 未設 — 請透過 build_runme.sh / build.sh 執行}"
+: "${DRIVER_DIR:?DRIVER_DIR 未設}"
+: "${BCD_PATCHED:?BCD_PATCHED 未設}"
+: "${BCD_TEMPLATE:?BCD_TEMPLATE 未設}"
 OUT_ISO="${OUT_ISO:-$ROOT/win11-droidvm-setup.iso}"
-BCD_PATCHED="${BCD_PATCHED:-$PATCHES/bcd-patched}"
-BCD_TEMPLATE="${BCD_TEMPLATE:-$PATCHES/bcd-template-patched}"
 WINPE_DRIVERS="${WINPE_DRIVERS:-viostor vioscsi}"
 SWM_SIZE_MB="${SWM_SIZE_MB:-3800}"
+DRIVER_INSTALL="${DRIVER_INSTALL:-}"   # 要安裝的驅動子資料夾（空=全部）
+DRIVER_CERT="${DRIVER_CERT:-}"         # 指定簽章憑證（空=從要裝的驅動 .cat 自動萃取）
+IMAGE_INDEX="${IMAGE_INDEX:-1}"        # 由 build.sh 偵測/選定後傳入；注入 autounattend 的 /IMAGE/INDEX
+USERNAME="${USERNAME:-USER}"           # 帳號名（注入 autounattend）
+PASSWORD="${PASSWORD:-}"               # 密碼（注入 autounattend；空=無密碼）
+SSH_PUBKEY="${SSH_PUBKEY:-}"           # SSH 公鑰（寫成 C:\DroidVM\authorized_keys；空=不佈署金鑰）
+OPENSSH_SRC="${OPENSSH_SRC:-}"         # 已解析的 OpenSSH 安裝檔路徑（空=不裝 SSH）
 
-# --- 驅動來源 DRIVERS_DIR：① GitHub repo URL ② 本地 .zip ③ 本地資料夾 ---
-# 預設：本機 inputs/drivers 或 inputs/drivers.zip 優先，否則用 repo URL 抓 dev release。
-DRIVERS_DIR="${DRIVERS_DIR:-}"
-if [ -z "$DRIVERS_DIR" ]; then
-  if   [ -d "$IN/drivers" ];     then DRIVERS_DIR="$IN/drivers"
-  elif [ -f "$IN/drivers.zip" ]; then DRIVERS_DIR="$IN/drivers.zip"
-  else                                DRIVERS_DIR="https://github.com/HuJK-Data/gunyah-guest-drivers-windows"
-  fi
-fi
-# URL 或 .zip -> 正規化成 inputs/drivers.zip（下載 or 複製）；資料夾則原樣使用
-case "$DRIVERS_DIR" in
-  https://*|http://*)
-    if [ ! -d "$IN/drivers" ]; then
-      repo="$(printf '%s' "$DRIVERS_DIR" | sed -E 's#^https?://github.com/##; s#\.git$##; s#/+$##')"
-      api="https://api.github.com/repos/$repo/releases/tags/dev"
-      echo "[drivers] 解析 dev release: $api"
-      mkdir -p "$IN"
-      # 用一般手段抓資產 url，不依賴 gh；repo/release 需為公開
-      json="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$api" || true)"
-      [ -n "$json" ] || { echo "缺: 取不到 release JSON, repo/release 需為公開: $api"; exit 1; }
-      # 抽出第一個 .zip 資產的下載 url：jq -> python3 -> grep/sed（普通人不一定有 jq）
-      if command -v jq >/dev/null 2>&1; then
-        url="$(printf '%s' "$json" | jq -r '[.assets[]|select(.name|endswith(".zip"))][0].browser_download_url // empty')"
-      elif command -v python3 >/dev/null 2>&1; then
-        url="$(printf '%s' "$json" | python3 -c 'import sys,json;a=[x["browser_download_url"] for x in json.load(sys.stdin).get("assets",[]) if x["name"].endswith(".zip")];print(a[0] if a else "")')"
-      else
-        url="$(printf '%s' "$json" | grep -o '"browser_download_url"[^"]*"[^"]*\.zip"' | head -1 | sed -E 's/.*"(https[^"]*\.zip)".*/\1/')"
-      fi
-      [ -n "$url" ] || { echo "缺：dev release 沒有 .zip 資產"; exit 1; }
-      echo "[drivers] 下載 $url -> inputs/drivers.zip"
-      curl -fL "$url" -o "$IN/drivers.zip"
-    fi
-    DRIVERS_DIR="$IN/drivers" ;;
-  *.zip)
-    if [ ! -d "$IN/drivers" ]; then
-      mkdir -p "$IN"
-      [ "$DRIVERS_DIR" -ef "$IN/drivers.zip" ] 2>/dev/null || cp -f "$DRIVERS_DIR" "$IN/drivers.zip"
-    fi
-    DRIVERS_DIR="$IN/drivers" ;;
-esac
-# 從 inputs/drivers.zip 解開成 inputs/drivers/（zip 頂層即 drivers/）
-if [ "$DRIVERS_DIR" = "$IN/drivers" ] && [ ! -d "$IN/drivers" ] && [ -f "$IN/drivers.zip" ]; then
-  echo "[drivers] 解開 inputs/drivers.zip -> inputs/drivers/"
-  ( cd "$IN" && unzip -q -o drivers.zip )
-fi
-
-# 憑證後備（通常免設；主要從驅動 .cat 自動萃取）。放在驅動解開「之後」才 glob 得到。
-CERT="${CERT:-$(ls "$DRIVERS_DIR"/*.cer "$IN"/drivers/*.cer "$IN"/*.cer 2>/dev/null | head -1 || true)}"
-
-for f in "$SRC_ISO" "$BCD_PATCHED" "$BCD_TEMPLATE" "$HERE/autounattend.xml" "$HERE/debloat.ps1"; do
+for f in "$SRC_ISO" "$BCD_PATCHED" "$BCD_TEMPLATE" "$HERE/autounattend.xml" "$HERE/debloat.ps1" "$HERE/setup-ssh.ps1"; do
   [ -e "$f" ] || { echo "缺少：$f"; exit 1; }
 done
-[ -d "$DRIVERS_DIR" ] || { echo "缺少驅動資料夾: $DRIVERS_DIR"; exit 1; }
+[ -d "$DRIVER_DIR" ] || { echo "缺少驅動資料夾: $DRIVER_DIR"; exit 1; }
 for t in xorriso wimlib-imagex; do command -v "$t" >/dev/null || { echo "需要 $t, 請 brew install wimlib xorriso"; exit 1; }; done
 echo "SRC_ISO=$SRC_ISO  OUT_ISO=$OUT_ISO"
 
@@ -86,40 +45,72 @@ MNT="$(echo "$ATTACH" | grep -oE '/Volumes/.*' | head -1)"
 echo "[mount] $MNT"
 
 mkdir -p "$WORK/WinpeDriver" "$WORK/OEM/DroidVM"
-cp "$HERE/autounattend.xml" "$WORK/autounattend.xml"
+# 注入 autounattend token。用 perl 做「字面」取代並 XML-escape 帳密：
+# 避免 bash ${//} 在新版把 & 當成 match、以及 sed 的 /&\ 雷，也保證帳密含 &<>" 時 XML 仍合法。
+UA_IMAGE_INDEX="$IMAGE_INDEX" UA_USERNAME="$USERNAME" UA_PASSWORD="$PASSWORD" \
+perl -pe '
+  BEGIN { for my $k (qw(UA_USERNAME UA_PASSWORD)) {
+    $ENV{$k} =~ s/&/&amp;/g; $ENV{$k} =~ s/</&lt;/g; $ENV{$k} =~ s/>/&gt;/g; $ENV{$k} =~ s/"/&quot;/g; } }
+  s/\@\@IMAGE_INDEX\@\@/$ENV{UA_IMAGE_INDEX}/g;
+  s/\@\@USERNAME\@\@/$ENV{UA_USERNAME}/g;
+  s/\@\@PASSWORD\@\@/$ENV{UA_PASSWORD}/g;
+' "$HERE/autounattend.xml" > "$WORK/autounattend.xml"
 for d in $WINPE_DRIVERS; do
-  [ -d "$DRIVERS_DIR/$d" ] && cp -R "$DRIVERS_DIR/$d" "$WORK/WinpeDriver/$d" || echo "  [warn] 開機驅動 $d 不存在！"
+  [ -d "$DRIVER_DIR/$d" ] && cp -R "$DRIVER_DIR/$d" "$WORK/WinpeDriver/$d" || echo "  [warn] 開機驅動 $d 不存在！"
 done
-cp -R "$DRIVERS_DIR" "$WORK/OEM/DroidVM/drivers"
 cp "$HERE/debloat.ps1" "$WORK/OEM/DroidVM/debloat.ps1"
 
-# 憑證：直接從「實際簽署驅動的 .cat」萃取所有唯一簽章者憑證 -> 匯入 TrustedPublisher/Root
-# 後安裝零提示。不可只依賴單一外部 .cer：實測不同驅動可能用不同（同名不同金鑰）測試憑證
-# （例：viorng 用 CPDK 另簽，與其餘 7 個不同），漏掉就會跳「無法驗證發行者」。
-mkdir -p "$WORK/OEM/DroidVM/certs"
-SEEN="$(mktemp)"; ncert=0
-for cat in "$DRIVERS_DIR"/*/*.cat; do
-  [ -f "$cat" ] || continue
-  # 一個 .cat 可能含多張憑證（leaf+chain），逐張拆出、用指紋去重
-  openssl pkcs7 -inform DER -in "$cat" -print_certs 2>/dev/null | awk '
-    /-----BEGIN CERTIFICATE-----/{n++} n{print > ("'"$SEEN"'.c" n)}'
-  for pem in "$SEEN".c*; do
-    [ -f "$pem" ] || continue
-    fp="$(openssl x509 -in "$pem" -noout -fingerprint -sha1 2>/dev/null | sed 's/.*=//;s/://g')"
-    [ -n "$fp" ] || { rm -f "$pem"; continue; }
-    if ! grep -qx "$fp" "$SEEN"; then
-      echo "$fp" >> "$SEEN"
-      openssl x509 -in "$pem" -out "$WORK/OEM/DroidVM/certs/$fp.cer" 2>/dev/null && ncert=$((ncert+1))
-    fi
-    rm -f "$pem"
-  done
-done
-echo "[cert] 從驅動 .cat 萃取 $ncert 張唯一簽章者憑證"
-# 萃取失敗才退回外部 CERT（保險）
-if [ "$ncert" -eq 0 ] && [ -n "$CERT" ] && [ -f "$CERT" ]; then
-  cp "$CERT" "$WORK/OEM/DroidVM/certs/fallback.cer"; echo "[cert] 退回外部 CERT"
+# SSH：setup 腳本一律放（沒 installer 會自我略過）；OpenSSH 安裝檔 + 公鑰視情況放。
+cp "$HERE/setup-ssh.ps1" "$WORK/OEM/DroidVM/setup-ssh.ps1"
+if [ -n "$OPENSSH_SRC" ] && [ -f "$OPENSSH_SRC" ]; then
+  cp "$OPENSSH_SRC" "$WORK/OEM/DroidVM/$(basename "$OPENSSH_SRC")"
+  echo "[ssh] staged $(basename "$OPENSSH_SRC")"
+else
+  echo "[ssh] OPENSSH_SRC 空 -> 不裝 SSH（僅建帳號）"
 fi
-rm -f "$SEEN"
+if [ -n "$SSH_PUBKEY" ]; then
+  printf '%s\n' "$SSH_PUBKEY" > "$WORK/OEM/DroidVM/authorized_keys"
+  echo "[ssh] staged authorized_keys"
+fi
+
+# 只複製「指定要安裝」的驅動（DRIVER_INSTALL 空=全部）到 $OEM$ -> C:\DroidVM\drivers
+mkdir -p "$WORK/OEM/DroidVM/drivers"
+if [ -n "$DRIVER_INSTALL" ]; then
+  for d in $DRIVER_INSTALL; do
+    [ -d "$DRIVER_DIR/$d" ] && cp -R "$DRIVER_DIR/$d" "$WORK/OEM/DroidVM/drivers/$d" \
+      || echo "  [warn] 要安裝的驅動 $d 不存在於 $DRIVER_DIR"
+  done
+else
+  cp -R "$DRIVER_DIR/"* "$WORK/OEM/DroidVM/drivers/"
+fi
+
+# 憑證：匯入指定的 DRIVER_CERT -> Root/TrustedPublisher（後安裝零提示）。
+# 沒指定就退回從「要安裝的那些驅動」的 .cat 自動萃取所有唯一簽章者憑證。
+mkdir -p "$WORK/OEM/DroidVM/certs"
+if [ -n "$DRIVER_CERT" ] && [ -f "$DRIVER_CERT" ]; then
+  cp "$DRIVER_CERT" "$WORK/OEM/DroidVM/certs/$(basename "$DRIVER_CERT")"
+  echo "[cert] 用指定的 DRIVER_CERT: $(basename "$DRIVER_CERT")"
+else
+  SEEN="$(mktemp)"; ncert=0
+  for cat in "$WORK/OEM/DroidVM/drivers"/*/*.cat; do
+    [ -f "$cat" ] || continue
+    # 一個 .cat 可能含多張憑證（leaf+chain），逐張拆出、用指紋去重
+    openssl pkcs7 -inform DER -in "$cat" -print_certs 2>/dev/null | awk '
+      /-----BEGIN CERTIFICATE-----/{n++} n{print > ("'"$SEEN"'.c" n)}'
+    for pem in "$SEEN".c*; do
+      [ -f "$pem" ] || continue
+      fp="$(openssl x509 -in "$pem" -noout -fingerprint -sha1 2>/dev/null | sed 's/.*=//;s/://g')"
+      [ -n "$fp" ] || { rm -f "$pem"; continue; }
+      if ! grep -qx "$fp" "$SEEN"; then
+        echo "$fp" >> "$SEEN"
+        openssl x509 -in "$pem" -out "$WORK/OEM/DroidVM/certs/$fp.cer" 2>/dev/null && ncert=$((ncert+1))
+      fi
+      rm -f "$pem"
+    done
+  done
+  echo "[cert] 從要安裝的驅動 .cat 萃取 $ncert 張憑證"
+  rm -f "$SEEN"
+fi
 cp "$BCD_PATCHED" "$WORK/bcd"
 
 echo "[wim] 複製 install.wim + 注入 patched BCD-Template（testsigning）..."
@@ -133,7 +124,7 @@ GRAFT=( '-graft-points'
   "/=$MNT"
   "/autounattend.xml=$WORK/autounattend.xml"
   '/$WinpeDriver$/='"$WORK/WinpeDriver/"
-  '/droidvm-drivers/='"$DRIVERS_DIR/"
+  '/droidvm-drivers/='"$WORK/OEM/DroidVM/drivers/"
   '/sources/$OEM$/$1/DroidVM/='"$WORK/OEM/DroidVM/"
   "/efi/microsoft/boot/bcd=$WORK/bcd"
 )

@@ -9,7 +9,7 @@ bcd-testsigning.py <bcd-file>
 testsigning 讓「以這個 BCD 開機的 WinPE/Setup」接受自簽驅動（載自簽 virtio 開機儲存驅動的關鍵）；
 nointegritychecks 在現代 Win11 多半被忽略，這裡一起設純為對稱/完整（與首登 bcdedit 一致）。
 
-只依賴 hivexregedit（libhivex-bin），不需要 python 的 hivex 模組。
+只依賴 hivexregedit（Debian 套件 libwin-hivex-perl），不需要 python 的 hivex 模組。
 """
 import re, subprocess, sys, tempfile, os
 

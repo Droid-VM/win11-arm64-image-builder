@@ -21,6 +21,16 @@
           <Order>1</Order>
           <Path>reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" /v BypassNRO /t REG_DWORD /d 1 /f</Path>
         </RunSynchronousCommand>
+        <!-- 以 SYSTEM 把驅動簽章者憑證匯入機器 Root + TrustedPublisher，日後互動式更新驅動
+             不再跳「無法驗證發行者」。憑證由 build.ps1 第 5b 步從 .cat 萃取並 staging 到 certs\。 -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Path>cmd /c for %i in (C:\DroidVM\certs\*.cer) do certutil -addstore -f Root "%i"</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <Path>cmd /c for %i in (C:\DroidVM\certs\*.cer) do certutil -addstore -f TrustedPublisher "%i"</Path>
+        </RunSynchronousCommand>
       </RunSynchronous>
     </component>
   </settings>
@@ -46,7 +56,7 @@
             <Name>USER</Name>
             <Group>Administrators</Group>
             <DisplayName>USER</DisplayName>
-            <Password><Value></Value><PlainText>true</PlainText></Password>
+            <Password><Value>@@PASSWORD@@</Value><PlainText>true</PlainText></Password>
           </LocalAccount>
         </LocalAccounts>
       </UserAccounts>
@@ -55,7 +65,7 @@
         <Username>USER</Username>
         <Enabled>true</Enabled>
         <LogonCount>999</LogonCount>
-        <Password><Value></Value><PlainText>true</PlainText></Password>
+        <Password><Value>@@PASSWORD@@</Value><PlainText>true</PlainText></Password>
       </AutoLogon>
 
       <FirstLogonCommands>
@@ -66,6 +76,17 @@
         <SynchronousCommand wcm:action="add">
           <Order>2</Order><Description>persistent autologon user</Description>
           <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName /t REG_SZ /d USER /f</CommandLine>
+        </SynchronousCommand>
+        <!-- 有密碼後，autologon 要能撐過 unattend AutoLogon 的 LogonCount 才需 DefaultPassword。
+             注意：這是「明文」存進登錄檔（Winlogon 的已知取捨）。不想要就刪掉這條，改吃 999 次上限。 -->
+        <SynchronousCommand wcm:action="add">
+          <Order>3</Order><Description>persistent autologon password</Description>
+          <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword /t REG_SZ /d "@@PASSWORD@@" /f</CommandLine>
+        </SynchronousCommand>
+        <!-- 裝 OpenSSH Server + 開 SSH/RDP 防火牆 + 佈署 authorized_keys（檔案由 build.ps1 8c staging）。 -->
+        <SynchronousCommand wcm:action="add">
+          <Order>4</Order><Description>setup OpenSSH + RDP firewall</Description>
+          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File C:\DroidVM\setup-ssh.ps1</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
     </component>
