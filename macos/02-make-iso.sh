@@ -11,8 +11,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILES="${FILES:-$HERE/files}"; mkdir -p "$FILES"   # intermediate files all go in macos/files
 
 # File-type variables are resolved and exported by build.sh (URLs downloaded to files/, zips extracted, all absolute paths).
-# To run this file standalone, export these absolute paths yourself first (or use build_runme.sh instead).
-: "${SRC_ISO:?SRC_ISO not set — run via build_runme.sh / build.sh}"
+# To run this file standalone, export these absolute paths yourself first (or use macos_build.sh instead).
+: "${SRC_ISO:?SRC_ISO not set — run via macos_build.sh / build.sh}"
 : "${DRIVER_DIR:?DRIVER_DIR not set}"
 : "${BCD_PATCHED:?BCD_PATCHED not set}"
 : "${BCD_TEMPLATE:?BCD_TEMPLATE not set}"
@@ -27,7 +27,7 @@ PASSWORD="${PASSWORD:-}"               # password (injected into autounattend; e
 SSH_PUBKEY="${SSH_PUBKEY:-}"           # SSH public key (written to C:\DroidVM\authorized_keys; empty=do not deploy key)
 OPENSSH_SRC="${OPENSSH_SRC:-}"         # resolved OpenSSH installer path (empty=do not install SSH)
 
-for f in "$SRC_ISO" "$BCD_PATCHED" "$BCD_TEMPLATE" "$HERE/autounattend.xml" "$HERE/debloat.ps1" "$HERE/setup-ssh.ps1"; do
+for f in "$SRC_ISO" "$BCD_PATCHED" "$BCD_TEMPLATE" "$HERE/autounattend.xml" "$HERE/gunyah-oobe.xml" "$HERE/debloat.ps1" "$HERE/setup-ssh.ps1"; do
   [ -e "$f" ] || { echo "Missing: $f"; exit 1; }
 done
 [ -d "$DRIVER_DIR" ] || { echo "Missing driver folder: $DRIVER_DIR"; exit 1; }
@@ -59,6 +59,21 @@ for d in $WINPE_DRIVERS; do
   [ -d "$DRIVER_DIR/$d" ] && cp -R "$DRIVER_DIR/$d" "$WORK/WinpeDriver/$d" || echo "  [warn] boot driver $d does not exist!"
 done
 cp "$HERE/debloat.ps1" "$WORK/OEM/DroidVM/debloat.ps1"
+
+# Target-side unattend for Phase B's closing `sysprep /generalize /oobe /unattend:C:\DroidVM\gunyah-oobe.xml`.
+# generalize resets the qemu-specialized image to the deployable OOBE-pending state (like route A / DISM): it wipes the
+# baked qemu device tree so the Gunyah first boot re-detects hardware and installs rdmapool for the real ACPI\RDMA0000
+# during boot (before viostor) -- while keeping the injected DriverStore drivers, debloat, OpenSSH, certs, testsigning
+# BCD and the USER account. This unattend only does what generalize/OOBE reset: silent OOBE, autologon to USER, and
+# recreating the pvmpower devnode. Same @@USERNAME@@/@@PASSWORD@@ token injection as autounattend.xml above.
+UA_USERNAME="$USERNAME" UA_PASSWORD="$PASSWORD" \
+perl -pe '
+  BEGIN { for my $k (qw(UA_USERNAME UA_PASSWORD)) {
+    $ENV{$k} =~ s/&/&amp;/g; $ENV{$k} =~ s/</&lt;/g; $ENV{$k} =~ s/>/&gt;/g; $ENV{$k} =~ s/"/&quot;/g; } }
+  s/\@\@USERNAME\@\@/$ENV{UA_USERNAME}/g;
+  s/\@\@PASSWORD\@\@/$ENV{UA_PASSWORD}/g;
+' "$HERE/gunyah-oobe.xml" > "$WORK/OEM/DroidVM/gunyah-oobe.xml"
+echo "[sysprep] staged gunyah-oobe.xml (Gunyah first-boot unattend)"
 
 # pvmpower binds to root-enumerated ROOT\PVMPOWER: the devnode must be created at first boot via SetupAPI
 # (INF injection does not produce a devnode). The script is provided at the driver zip root; old zips without it are skipped (autounattend

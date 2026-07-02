@@ -1,20 +1,9 @@
-# 本機設定（linux/macos 從 .env.example 複製；windows 從 config.example.ps1 複製）
-.env
-windows/config.ps1
-
-# 快取與雜項
+# 快取與雜項（各路線的中間產物：URL 下載 / zip 解壓，windows/files 與 macos/files 皆涵蓋）
+files/
 __pycache__/
 *.pyc
 
 # 使用者輸入與產物（大檔，不入庫）
-files/
-inputs/*.iso
-inputs/drivers/
-inputs/drivers.zip
-inputs/drivers-dev/
-patches/
+inputs/
+dist/
 *.qcow2
-*.fd
-*.sock
-clicker.log
-win11-droidvm-setup.iso

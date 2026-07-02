@@ -204,17 +204,19 @@
           <Order>10</Order><Description>debloat</Description>
           <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File C:\DroidVM\debloat.ps1</CommandLine>
         </SynchronousCommand>
-        <!-- pvmpower 綁 root-enumerated ROOT\PVMPOWER：INF 注入/pnputil 不會產生 devnode，
-             用 SetupAPI 建立（腳本冪等，內含 pnputil /scan-devices 讓 PnP 從 driver store
-             自動綁定；憑證已於 specialize 信任，零提示）。舊 zip 沒這支腳本就略過。 -->
+        <!-- 收尾：sysprep /generalize 把映像打回「OOBE-pending、無 baked 裝置樹」的可部署狀態，位元語意等同 route A（DISM）產物。
+             為何非做不可：上面 pnputil 是在「沒有 ACPI\RDMA0000 的 qemu VM」裡裝驅動，做出的映像已 specialize 成 qemu 硬體
+             （baked 了上千個 Enum 裝置實例、OOBE 已完成）。這種映像搬到 Gunyah 是「第二次開機」，只把 cache 內的 boot device
+             set 拉起來；新出現的 ACPI\RDMA0000 被當新裝置延後安裝 -> rdmapool 來不及、viostor 退回 lent 直接 DMA -> crosvm 中止。
+             generalize 清掉那些 qemu 專屬 device 實例 + OOBE 狀態，但「保留」DriverStore 驅動、boot-start service、debloat、
+             OpenSSH、憑證、testsigning BCD、USER 帳號。於是 Gunyah 第一次開機 = 全新硬體偵測，會在 boot 階段就把 rdmapool 綁到
+             真的 ACPI\RDMA0000（早於 viostor），跟能開機的 DISM 產物走同一條路。/unattend 指到極簡的目標端 unattend
+             （gunyah-oobe.xml：靜默 OOBE + autologon + 重建 pvmpower devnode，其餘都靠上面已 baked 的成果）。
+             /shutdown -> qemu 乾淨退出 = qcow2 成品就緒。失敗會停在此步（不 fallback 關機，以免誤出未 generalize 的壞映像）；
+             如卡住檢查 C:\Windows\System32\Sysprep\Panther\setuperr.log（常見為 appx 驗證，debloat 已用 provisioned+AllUsers 併移緩解）。 -->
         <SynchronousCommand wcm:action="add">
-          <Order>11</Order><Description>create pvmpower devnode</Description>
-          <CommandLine>cmd /c if exist C:\DroidVM\pvmpower-devnode.ps1 powershell -NoProfile -ExecutionPolicy Bypass -File C:\DroidVM\pvmpower-devnode.ps1</CommandLine>
-        </SynchronousCommand>
-        <!-- 全部完成後自動關機，qemu 乾淨退出 = qcow2 成品就緒 -->
-        <SynchronousCommand wcm:action="add">
-          <Order>12</Order><Description>shutdown when done</Description>
-          <CommandLine>cmd /c shutdown /s /t 45 /c "DroidVM install complete"</CommandLine>
+          <Order>11</Order><Description>sysprep generalize (defer hardware detect to Gunyah)</Description>
+          <CommandLine>cmd /c %WINDIR%\System32\Sysprep\sysprep.exe /generalize /oobe /shutdown /unattend:C:\DroidVM\gunyah-oobe.xml</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
     </component>

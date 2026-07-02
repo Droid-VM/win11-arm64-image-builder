@@ -49,6 +49,13 @@ foreach ($t in $tasks) { Disable-ScheduledTask -TaskPath (Split-Path $t) -TaskNa
 # 5) Disable hibernation (removes hiberfil.sys, shrinks the image)
 powercfg /h off
 
+# 5b) Disable Reserved Storage (~7GB). ShippedWithReserves=0 lives in the SOFTWARE hive and survives sysprep /generalize,
+#     so the Gunyah first boot won't re-reserve; the /Online disable reclaims any reserve already made during the qemu
+#     Setup so the qcow2 stays small after the ReTrim below. (sleep/display = Never is set on the target in gunyah-oobe.xml.)
+Write-Host "[debloat] disable Reserved Storage"
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\ReserveManager" /v ShippedWithReserves /t REG_DWORD /d 0 /f | Out-Null
+Dism /Online /Set-ReservedStorageState /State:Disabled | Out-Null
+
 # 6) Clean up WinSxS and update leftovers, temp files
 Dism /Online /Cleanup-Image /StartComponentCleanup /ResetBase /Quiet
 Remove-Item -Recurse -Force "$env:WINDIR\Temp\*"      -ErrorAction SilentlyContinue
@@ -77,7 +84,7 @@ sc start wuauserv >nul 2>&1
 echo Done. Windows Update re-enabled (a reboot is recommended).
 pause
 '@
-$desktop = Join-Path $env:USERPROFILE 'Desktop'   # Desktop of the build_runme.sh USERNAME account (FirstLogon runs as that account)
+$desktop = Join-Path $env:USERPROFILE 'Desktop'   # Desktop of the macos_build.sh USERNAME account (FirstLogon runs as that account)
 New-Item -ItemType Directory -Force $desktop | Out-Null
 Set-Content -Path (Join-Path $desktop 'enable_windows_update.bat') -Value $enableBat -Encoding Ascii
 

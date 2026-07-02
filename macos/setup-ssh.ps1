@@ -3,7 +3,7 @@
     - arm64 .msi preferred (one-click installs service/host key/ACL), .zip fallback (install-sshd + ssh-keygen -A + FixHostFilePermissions)
     - authorized_keys -> C:\ProgramData\ssh\administrators_authorized_keys (the administrator key path) + tighten ACL
     - Open the SSH(22) firewall, start sshd (auto-start on boot)
-  The installer and keys are staged to C:\DroidVM\ by 02-make-iso.sh; the public key source is SSH_PUBKEY from build_runme.sh.
+  The installer and keys are staged to C:\DroidVM\ by 02-make-iso.sh; the public key source is SSH_PUBKEY from macos_build.sh.
   When no OpenSSH installer is present, simply skip it (not fatal).
 #>
 $ErrorActionPreference = 'Stop'

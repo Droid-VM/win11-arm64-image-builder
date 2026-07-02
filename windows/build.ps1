@@ -4,8 +4,8 @@
   First boot runs OOBE via unattend to create USER/autologon (non-interactive).
 
   Requirements: x64 Windows (Administrator); built-in dism/bcdboot/diskpart; qemu-img (QEMU for Windows, on PATH).
-  Config: config.ps1 next to this script (copy from config.example.ps1) sets $SRC_ISO / $DRIVERS_DIR / ...
-  Usage: run as Administrator, or  powershell -ExecutionPolicy Bypass -File build.ps1
+  Entry point: ..\windows_build.ps1 sets $env:SRC_ISO / $DRIVERS_DIR / ... then calls this. To run build.ps1 directly,
+  set those $env: vars first, then (as Administrator):  powershell -ExecutionPolicy Bypass -File build.ps1
   Cross-arch note: x64 host applying/injecting an ARM64 image + bcdboot usually works; if not, use ARM64 Windows/WinPE.
 #>
 [CmdletBinding()]
@@ -44,16 +44,10 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 $HERE = $PSScriptRoot
 $ROOT = Split-Path $HERE -Parent
 
-# --- Load config.ps1 (PowerShell's native "source .env": dot-source a script that sets the
-#     $SRC_ISO / $DRIVERS_DIR / ... variables). Copy config.example.ps1 -> config.ps1 and edit.
-#     Precedence (resolved below): environment variable / CLI  >  config.ps1  >  built-in default. ---
-$cfgFile = Join-Path $HERE "config.ps1"
-if (Test-Path $cfgFile) { . $cfgFile }
-
 # --- File-type input resolution: URL -> download into files\ then use; local path -> use directly; zip -> extract into files\ (goes through the file handling flow) ---
 function Resolve-InputFile([string]$Src, [string]$SaveAs = "") {
     if ($Src -match '^https?://') {
-        $files = Join-Path $ROOT "files"
+        $files = Join-Path $HERE "files"
         New-Item -ItemType Directory -Force $files | Out-Null
         if (-not $SaveAs) { $SaveAs = Split-Path ($Src -replace '\?.*$', '') -Leaf }
         $dst = Join-Path $files $SaveAs
@@ -74,7 +68,7 @@ function Resolve-ZipRoot([string]$Src) {
     $p = Resolve-InputFile $Src "gunyah-arm64-drivers.zip"
     if (Test-Path $p -PathType Container) { return $p }
     if ($p -like "*.zip") {
-        $dir = Join-Path (Join-Path $ROOT "files") ([IO.Path]::GetFileNameWithoutExtension($p))
+        $dir = Join-Path (Join-Path $HERE "files") ([IO.Path]::GetFileNameWithoutExtension($p))
         if (Test-Path $dir) { Write-Host "[files] already extracted: $dir" }
         else { Write-Host "[files] extract $p -> $dir"; Expand-Archive $p -DestinationPath $dir -Force }
         return $dir
@@ -191,35 +185,35 @@ function Resolve-ImageIndex([string]$wim, [int]$wanted) {
     return $n
 }
 
-# --- Resolve config: environment variable  >  config.ps1 value  >  built-in default ---
-$SRC_ISO     = if ($env:SRC_ISO)     { $env:SRC_ISO }          elseif ($SRC_ISO)     { $SRC_ISO }          else { $null }
-$DRIVERS_DIR = if ($env:DRIVERS_DIR) { $env:DRIVERS_DIR }      elseif ($DRIVERS_DIR) { $DRIVERS_DIR }      else { "https://github.com/Droid-VM/gunyah-guest-drivers-windows/releases/download/dev/gunyah-arm64-drivers.zip" }
-$IMAGE_INDEX = if ($env:IMAGE_INDEX) { [int]$env:IMAGE_INDEX } elseif ($IMAGE_INDEX) { [int]$IMAGE_INDEX } else { 0 }       # 0 = list editions and prompt
-$DISK_MB     = if ($env:DISK_SIZE_MB){ [int]$env:DISK_SIZE_MB }elseif ($DISK_SIZE_MB){ [int]$DISK_SIZE_MB }else { 40960 }
-$OUT_QCOW    = if ($env:OUT_QCOW)    { $env:OUT_QCOW }         elseif ($OUT_QCOW)    { $OUT_QCOW }         else { Join-Path $ROOT "win11-droidvm-final.qcow2" }
-$LETTER_ESP  = if ($env:LETTER_ESP)  { $env:LETTER_ESP }       elseif ($LETTER_ESP)  { $LETTER_ESP }       else { Get-FreeDriveLetter }
-$LETTER_WIN  = if ($env:LETTER_WIN)  { $env:LETTER_WIN }       elseif ($LETTER_WIN)  { $LETTER_WIN }       else { Get-FreeDriveLetter @($LETTER_ESP) }
+# --- Resolve config: environment variable (set by windows_build.ps1) > built-in default ---
+$SRC_ISO     = if ($env:SRC_ISO)     { $env:SRC_ISO }          else { $null }
+$DRIVERS_DIR = if ($env:DRIVERS_DIR) { $env:DRIVERS_DIR }      else { "https://github.com/Droid-VM/gunyah-guest-drivers-windows/releases/download/dev/gunyah-arm64-drivers.zip" }
+$IMAGE_INDEX = if ($env:IMAGE_INDEX) { [int]$env:IMAGE_INDEX } else { 0 }       # 0 = list editions and prompt
+$DISK_MB     = if ($env:DISK_SIZE_MB){ [int]$env:DISK_SIZE_MB }else { 40960 }
+$OUT_QCOW    = if ($env:OUT_QCOW)    { $env:OUT_QCOW }         else { Join-Path $ROOT "win11-droidvm-final.qcow2" }
+$COMPRESS    = if ($env:COMPRESS)    { $env:COMPRESS }         else { "" }         # non-empty = -c compress the qcow2 (see step 9)
+$LETTER_ESP  = if ($env:LETTER_ESP)  { $env:LETTER_ESP }       else { Get-FreeDriveLetter }
+$LETTER_WIN  = if ($env:LETTER_WIN)  { $env:LETTER_WIN }       else { Get-FreeDriveLetter @($LETTER_ESP) }
 # Driver install list/cert (mirrors macOS): DRIVER_DIR=directory containing the per-driver subfolders (ZIP/ = driver zip extraction root);
 # DRIVER_INSTALL=offline-inject only these subfolders (empty=all); DRIVER_CERT=specify the signing cert (empty=auto-extract from .cat).
-$DRIVER_DIR     = if ($env:DRIVER_DIR)     { $env:DRIVER_DIR }     elseif ($DRIVER_DIR)     { $DRIVER_DIR }     else { "ZIP/drivers" }
-$DRIVER_INSTALL = if ($env:DRIVER_INSTALL) { $env:DRIVER_INSTALL } elseif ($DRIVER_INSTALL) { $DRIVER_INSTALL } else { "" }
-$DRIVER_CERT    = if ($env:DRIVER_CERT)    { $env:DRIVER_CERT }    elseif ($DRIVER_CERT)    { $DRIVER_CERT }    else { "" }
-# Account name. Use $env:DVM_USERNAME (not the built-in Windows $env:USERNAME = the current logged-in user); the plain
-# variable $USERNAME in config.ps1 also works. If neither is set -> defaults to USER.
-$USERNAME     = if ($env:DVM_USERNAME) { $env:DVM_USERNAME } elseif ($USERNAME) { $USERNAME } else { "USER" }
+$DRIVER_DIR     = if ($env:DRIVER_DIR)     { $env:DRIVER_DIR }     else { "ZIP/drivers" }
+$DRIVER_INSTALL = if ($env:DRIVER_INSTALL) { $env:DRIVER_INSTALL } else { "" }
+$DRIVER_CERT    = if ($env:DRIVER_CERT)    { $env:DRIVER_CERT }    else { "" }
+# Account name. Use $env:DVM_USERNAME (not the built-in Windows $env:USERNAME = the current logged-in user). Unset -> USER.
+$USERNAME     = if ($env:DVM_USERNAME) { $env:DVM_USERNAME } else { "USER" }
 # Account password: network logon for RDP/SSH does not accept a blank password (Windows default LimitBlankPasswordUse=1). Use $env:DVM_PASSWORD
-# (the @@PASSWORD@@ token is injected into unattend.xml, see step 8; compatible with the old SSH_PASSWORD).
-$PASSWORD     = if ($env:DVM_PASSWORD) { $env:DVM_PASSWORD } elseif ($env:SSH_PASSWORD) { $env:SSH_PASSWORD } elseif ($PASSWORD) { $PASSWORD } elseif ($SSH_PASSWORD) { $SSH_PASSWORD } else { "DroidVM" }
+# (the @@PASSWORD@@ token is injected into unattend.xml, see step 8; the old $env:SSH_PASSWORD still works).
+$PASSWORD     = if ($env:DVM_PASSWORD) { $env:DVM_PASSWORD } elseif ($env:SSH_PASSWORD) { $env:SSH_PASSWORD } else { "DroidVM" }
 # SSH public key(s) (multiple allowed, newline-separated); empty = password login only. Passed via environment variable, not written to inputs\.
-$SSH_PUBKEY   = if ($env:SSH_PUBKEY)   { $env:SSH_PUBKEY }      elseif ($SSH_PUBKEY)   { $SSH_PUBKEY }        else { "" }
+$SSH_PUBKEY   = if ($env:SSH_PUBKEY)   { $env:SSH_PUBKEY }      else { "" }
 # OpenSSH installer source: URL (downloaded at build time) or local path (copied). Defaults to the arm64 .msi. Empty string = do not install SSH (RDP only).
-$OPENSSH_SRC  = if ($env:OPENSSH_SRC)  { $env:OPENSSH_SRC }     elseif ($OPENSSH_SRC)  { $OPENSSH_SRC }       else { "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-ARM64-v10.0.0.0.msi" }
+$OPENSSH_SRC  = if ($env:OPENSSH_SRC)  { $env:OPENSSH_SRC }     else { "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.0.0.0p2-Preview/OpenSSH-ARM64-v10.0.0.0.msi" }
 Write-Host "[disk] drive letters: ESP=$LETTER_ESP Windows=$LETTER_WIN"
 
 foreach ($t in @("dism", "bcdboot", "diskpart", "qemu-img")) {
     if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { throw "$t not found (qemu-img needs QEMU for Windows installed and on PATH)" }
 }
-if (-not $SRC_ISO) { throw "Invalid SRC_ISO: set the Win11 ARM64 ISO (URL or local path) in config.ps1 / build_from_zip.ps1" }
+if (-not $SRC_ISO) { throw "Invalid SRC_ISO: set the Win11 ARM64 ISO (URL or local path) in windows_build.ps1" }
 $SRC_ISO = Resolve-InputFile $SRC_ISO "win11-arm64.iso"
 
 $WORK = Join-Path $env:TEMP ("droidvm-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
@@ -404,6 +398,29 @@ exit
         }
     }
 
+    # === 6c) Disable Reserved Storage (offline) ===
+    # Win11 images ship with ~7GB Reserved Storage that the reserve manager allocates on first boot. Setting
+    # ShippedWithReserves=0 in the offline SOFTWARE hive (before the image ever boots) makes it treat the image as
+    # shipped without reserves -> it never allocates them. Purely to save space; failure is non-fatal.
+    # (sleep/display = Never is set on first boot via unattend.xml, since powercfg needs a running system.)
+    Write-Host "[debloat] disabling Reserved Storage offline (ShippedWithReserves=0) ..."
+    $softHive = "$W\Windows\System32\config\SOFTWARE"
+    $softLoaded = $false
+    try {
+        Invoke-ExternalCommand -FilePath "reg" -ArgumentList @("load", "HKLM\DVMSOFT", $softHive) -OutNull -What "reg load SOFTWARE hive"
+        $softLoaded = $true
+        $rk = "HKLM\DVMSOFT\Microsoft\Windows\CurrentVersion\ReserveManager"
+        Show-CommandLine "reg add" @($rk, "/v", "ShippedWithReserves", "/t", "REG_DWORD", "/d", "0", "/f")
+        reg add $rk /v ShippedWithReserves /t REG_DWORD /d 0 /f *> $null
+    } catch {
+        Write-Host "  (skipping Reserved Storage disable: $($_.Exception.Message))" -ForegroundColor DarkYellow
+    } finally {
+        if ($softLoaded) {
+            [gc]::Collect(); [gc]::WaitForPendingFinalizers()
+            reg unload HKLM\DVMSOFT *> $null
+        }
+    }
+
     # === 7) Boot files + BCD (bcdboot uses the ARM64 bootmgr from the image) ===
     Write-Host "[boot] bcdboot + BCD ..."
     Invoke-ExternalCommand -FilePath "bcdboot" -ArgumentList @("$W\Windows", "/s", $S, "/f", "UEFI") -OutNull -What "bcdboot"
@@ -469,7 +486,13 @@ exit
     # === 9) Detach VHDX -> convert to qcow2 ===
     Cleanup; $vhdAttached = $false; $isoMounted = $false
     Write-Host "[qcow2] converting -> $OUT_QCOW ..."
-    Invoke-ExternalCommand -FilePath "qemu-img" -ArgumentList @("convert", "-p", "-O", "qcow2", $VHDX, $OUT_QCOW) -What "qemu-img convert"
+    # $COMPRESS adds -c (zlib-compress the qcow2). crosvm CANNOT read compressed clusters -> only for shipping to a
+    # DroidVM import / pre-flight that decompresses first (DroidVM's pre-start guard also detects it and offers to
+    # convert); still bootable in plain qemu. Default off.
+    $convArgs = @("convert", "-p")
+    if ($COMPRESS) { $convArgs += "-c" }
+    $convArgs += @("-O", "qcow2", $VHDX, $OUT_QCOW)
+    Invoke-ExternalCommand -FilePath "qemu-img" -ArgumentList $convArgs -What "qemu-img convert"
     $sz = "{0:N1} GB" -f ((Get-Item $OUT_QCOW).Length / 1GB)
     Write-Host "Done  -> $OUT_QCOW ($sz)" -ForegroundColor Green
 }

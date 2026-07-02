@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =====================================================================
 # build.sh — Win11 ARM64 bootable qcow2 "one-click" build (Apple Silicon Mac)
-# Variables are provided by build_runme.sh (or export them yourself before running). File-type variables can be a URL or a local path:
+# Variables are provided by macos_build.sh (or export them yourself before running). File-type variables can be a URL or a local path:
 #   URL -> download into files/ then use; local path -> use directly; zip -> extract into files/.
 # Flow: resolve inputs -> 02 pack ISO -> 03 HVF install (auto shutdown) -> qemu-img compress.
 # Requirements: brew install qemu wimlib xorriso
@@ -69,8 +69,8 @@ resolve_image_index() {
   done
 }
 
-# --- Required variables (recommended to set via build_runme.sh) ---
-: "${SRC_ISO:?set SRC_ISO (URL or path of the Win11 ARM64 ISO) — recommended via build_runme.sh}"
+# --- Required variables (recommended to set via macos_build.sh) ---
+: "${SRC_ISO:?set SRC_ISO (URL or path of the Win11 ARM64 ISO) — recommended via macos_build.sh}"
 : "${DRIVERS_DIR:?set DRIVERS_DIR (URL or path of the driver zip/folder)}"
 
 # --- Resolve file-type inputs to absolute paths, export to 02/03 (no longer scans inputs/) ---
@@ -121,7 +121,11 @@ echo "[build] === 4/4 compress qcow2 ==="
 OUT_QCOW="${OUT_QCOW:-$HERE/win11-droidvm-final.qcow2}"   # final artifact goes in macos/
 # convert only writes allocated clusters -> the artifact is compact/sparse (during install discard=unmap + debloat's
 # Optimize-Volume -ReTrim already TRIMs guest-freed space in real time, so the working qcow2 itself does not bloat).
-qemu-img convert -O qcow2 "$FILES/win11-droidvm.qcow2" "$OUT_QCOW"
+# COMPRESS non-empty adds -c (zlib-compress the clusters). NOTE: crosvm CANNOT read compressed clusters, so this is only
+# for shipping to a DroidVM import / pre-flight that decompresses first (DroidVM's pre-start guard also detects it and
+# offers to convert). Still bootable in plain qemu. Default off. (Plain string, not an array, for bash 3.2 on macOS.)
+COMPRESS_FLAG=""; [ -n "${COMPRESS:-}" ] && COMPRESS_FLAG="-c"
+qemu-img convert $COMPRESS_FLAG -O qcow2 "$FILES/win11-droidvm.qcow2" "$OUT_QCOW"
 sz=$(ls -lh "$OUT_QCOW" | awk '{print $5}')
 echo "[build] done ✅  -> $OUT_QCOW ($sz)"
 

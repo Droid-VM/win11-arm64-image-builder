@@ -12,7 +12,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILES="${FILES:-$HERE/files}"; mkdir -p "$FILES"   # intermediate files (setup ISO / working qcow2 / NVRAM / qmp / log) all go in macos/files
-# Variables are provided by build.sh / build_runme.sh (environment variables).
+# Variables are provided by build.sh / macos_build.sh (environment variables).
 
 SETUP_ISO="${SETUP_ISO:-$FILES/win11-droidvm-setup.iso}"
 QCOW="${QCOW:-$FILES/win11-droidvm.qcow2}"

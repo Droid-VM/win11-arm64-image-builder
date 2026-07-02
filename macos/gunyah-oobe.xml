@@ -1,12 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  DroidVM Win11 ARM64 — DISM 離線部署用 unattend（首次開機跑 OOBE）。
-  只含 specialize + oobeSystem：驅動已離線注入、debloat 已離線做、testsigning 已在 BCD 設好，
-  所以這裡不需 windowsPE、不需匯入憑證、不需 pnputil。只負責建 USER + 自動登入。
+  DroidVM Gunyah 目標端 first-boot unattend（給 Phase B 末尾的 sysprep /generalize /oobe /unattend 用）。
+
+  qemu 端已把重活做完後才 generalize：驅動(DriverStore 套件 + boot-start service)、debloat、OpenSSH、
+  匯入的簽章憑證、testsigning BCD、USER 帳號都「留著」。generalize 只清掉「裝置實例(Enum) + OOBE 狀態」，
+  把映像打回 route A（DISM）那種「OOBE-pending、無 baked 裝置樹」的可部署狀態。
+
+  所以 Gunyah 第一次開機 = 全新硬體偵測：winload 載入 boot-start 驅動，PnP 在 boot 階段就把真實裝置綁上去
+  —— 尤其是把 rdmapool 綁到韌體列舉的 ACPI\RDMA0000（System Bus Extender 群組，早於 viostor 的 SCSI miniport），
+  於是 viostor 一開機就能走 rdmapool bounce，不再退回 lent 直接 DMA。這支 unattend 因此只需做「generalize 清掉、
+  或 OOBE 重跑才需要」的最小集合：靜默跳過 OOBE、autologon 回既有 USER、重建 pvmpower 的 ROOT\PVMPOWER devnode。
+
   注意：所有 component 的 processorArchitecture 必須是 arm64。
 -->
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
 
+  <!-- ============ specialize：電腦名 + OOBE 網路旁路 + 重新信任驅動簽章者 ============ -->
   <settings pass="specialize">
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="arm64"
                publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
@@ -21,8 +30,9 @@
           <Order>1</Order>
           <Path>reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" /v BypassNRO /t REG_DWORD /d 1 /f</Path>
         </RunSynchronousCommand>
-        <!-- 以 SYSTEM 把驅動簽章者憑證匯入機器 Root + TrustedPublisher，日後互動式更新驅動
-             不再跳「無法驗證發行者」。憑證由 build.ps1 第 5b 步從 .cat 萃取並 staging 到 certs\。 -->
+        <!-- generalize 後目標端會從 DriverStore「重裝」驅動（devnode 被清、需重綁）。憑證機器存放區多半留存，
+             這裡以 SYSTEM 權限冪等重匯 Root + TrustedPublisher，確保重裝 rdmapool 等測試簽章驅動時零提示。
+             （憑證檔由 02-make-iso.sh staging 到 C:\DroidVM\certs，檔案不受 generalize 影響。）-->
         <RunSynchronousCommand wcm:action="add">
           <Order>2</Order>
           <Path>cmd /c for %i in (C:\DroidVM\certs\*.cer) do certutil -addstore -f Root "%i"</Path>
@@ -35,6 +45,7 @@
     </component>
   </settings>
 
+  <!-- ============ oobeSystem：靜默 OOBE、autologon 回既有 USER、重建 pvmpower devnode ============ -->
   <settings pass="oobeSystem">
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="arm64"
                publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
@@ -50,17 +61,7 @@
         <SkipUserOOBE>true</SkipUserOOBE>
       </OOBE>
 
-      <UserAccounts>
-        <LocalAccounts>
-          <LocalAccount wcm:action="add">
-            <Name>@@USERNAME@@</Name>
-            <Group>Administrators</Group>
-            <DisplayName>@@USERNAME@@</DisplayName>
-            <Password><Value>@@PASSWORD@@</Value><PlainText>true</PlainText></Password>
-          </LocalAccount>
-        </LocalAccounts>
-      </UserAccounts>
-
+      <!-- 不建立帳號：USER 於 generalize 後仍存在（本機帳號不受 generalize 移除），僅把 autologon 指回它。 -->
       <AutoLogon>
         <Username>@@USERNAME@@</Username>
         <Enabled>true</Enabled>
@@ -69,34 +70,29 @@
       </AutoLogon>
 
       <FirstLogonCommands>
+        <!-- autologon 撐過 AutoLogon 的 LogonCount 後仍持久（明文存登錄檔的已知取捨，與 qemu 端一致）。 -->
         <SynchronousCommand wcm:action="add">
-          <Order>1</Order><Description>persistent autologon</Description>
+          <Order>1</Order><Description>persistent autologon enable</Description>
           <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 1 /f</CommandLine>
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
           <Order>2</Order><Description>persistent autologon user</Description>
           <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName /t REG_SZ /d @@USERNAME@@ /f</CommandLine>
         </SynchronousCommand>
-        <!-- 有密碼後，autologon 要能撐過 unattend AutoLogon 的 LogonCount 才需 DefaultPassword。
-             注意：這是「明文」存進登錄檔（Winlogon 的已知取捨）。不想要就刪掉這條，改吃 999 次上限。 -->
         <SynchronousCommand wcm:action="add">
           <Order>3</Order><Description>persistent autologon password</Description>
           <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword /t REG_SZ /d "@@PASSWORD@@" /f</CommandLine>
         </SynchronousCommand>
-        <!-- 裝 OpenSSH Server + 開 SSH/RDP 防火牆 + 佈署 authorized_keys（檔案由 build.ps1 8c staging）。 -->
+        <!-- pvmpower 綁 root-enumerated ROOT\PVMPOWER，是 device 實例，會被 generalize 清掉，故在目標端重建。
+             （rdmapool 相反：它綁韌體列舉的 ACPI\RDMA0000，靠這次全新硬體偵測就自動裝好，不需任何腳本。）
+             舊 zip 沒這支腳本就略過。 -->
         <SynchronousCommand wcm:action="add">
-          <Order>4</Order><Description>setup OpenSSH + RDP firewall</Description>
-          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -File C:\DroidVM\setup-ssh.ps1</CommandLine>
-        </SynchronousCommand>
-        <!-- pvmpower 綁 root-enumerated ROOT\PVMPOWER：devnode 要在首次開機用 SetupAPI 建立（INF 注入
-             不會產生 devnode）。腳本由驅動 zip 根目錄提供；沒有就跳過（if exist 防呆）。 -->
-        <SynchronousCommand wcm:action="add">
-          <Order>5</Order><Description>pvmpower devnode</Description>
+          <Order>4</Order><Description>create pvmpower devnode</Description>
           <CommandLine>cmd /c if exist C:\DroidVM\pvmpower-devnode.ps1 powershell -NoProfile -ExecutionPolicy Bypass -File C:\DroidVM\pvmpower-devnode.ps1</CommandLine>
         </SynchronousCommand>
-        <!-- 電源：永不睡眠、永不關螢幕（AC+DC 都設 Never）。 -->
+        <!-- 電源：永不睡眠、永不關螢幕（AC+DC 都設 Never）。設在目標端 FirstLogon，確保 generalize 後仍套用到最終 VM。 -->
         <SynchronousCommand wcm:action="add">
-          <Order>6</Order><Description>power: never sleep / never turn off display</Description>
+          <Order>5</Order><Description>power: never sleep / never turn off display</Description>
           <CommandLine>cmd /c powercfg /change standby-timeout-ac 0 &amp; powercfg /change standby-timeout-dc 0 &amp; powercfg /change monitor-timeout-ac 0 &amp; powercfg /change monitor-timeout-dc 0</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
