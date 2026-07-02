@@ -54,7 +54,9 @@ QEMU_COMMON=(
 start_qemu() {
   local mode="$1"; rm -f "$QMP"
   if [ "$mode" = cd ]; then
-    qemu-system-aarch64 "${QEMU_COMMON[@]}" \
+    # -no-reboot：Setup 套完映像 reboot 時 qemu 直接退出，不會進「CD 提示逾時 -> 未 patch 的磁碟
+    # 開機失敗 -> reset」的循環。等於使用者說的「開機就關機」，但用 qemu 內建旗標、免編 boot img。
+    qemu-system-aarch64 "${QEMU_COMMON[@]}" -no-reboot \
       -device virtio-blk-pci,drive=target,bootindex=1 \
       -drive "if=none,id=target,file=$QCOW,format=qcow2,cache=writeback,discard=unmap,detect-zeroes=unmap" \
       -device usb-storage,bus=xhci.0,drive=instmedia,removable=on,bootindex=0 \
@@ -78,23 +80,25 @@ stop_qemu() {
 
 # ---- Phase A：安裝媒體開機、套用映像 ----
 echo "[qemu] === Phase A：安裝媒體開機、套用映像 ==="
-echo "[qemu]   ⓘ 套用映像後、畫面會出現「Press any key / CD 開機提示」反覆循環約 1-2 分 —— 這是正常的。"
-echo "[qemu]     腳本會自動偵測套用完成、停下來離線補 BCD testsigning，再進 Phase B。此階段請勿中斷。"
+echo "[qemu]   ⓘ 套完映像後 Setup 會 reboot，-no-reboot 讓 qemu 直接退出 -> 進 BCD patch。此階段請勿中斷。"
 start_qemu cd
-# 等套用完成：qcow2 成長超過門檻後停滯 STALL 秒（Setup 套完映像要 reboot；此時 CD 會 loop，不會自己結束）。
+# 主要訊號：-no-reboot 讓 qemu 在 Setup 套完映像 reboot 時退出（~秒級，畫面不再 loop）。
+# 後備：萬一某情況 reboot 沒觸發退出，仍用「qcow2 成長後停滯 STALL 秒」判斷套用完成。
 MIN_APPLIED=$((3 * 1024 * 1024 * 1024)); STALL=75; MAXA=2400
 t0=$(date +%s); last=0; laststamp=$t0
 while :; do
-  sleep 15
+  sleep 10
+  if ! ps -p "$QEMU_PID" >/dev/null 2>&1; then echo "[qemu] 映像套用完成（reboot 觸發 -no-reboot 退出）"; break; fi
   sz=$(stat -f %z "$QCOW" 2>/dev/null || echo 0); now=$(date +%s)
   [ "$sz" -gt "$last" ] && { last=$sz; laststamp=$now; }
   if [ "$sz" -gt "$MIN_APPLIED" ] && [ $((now - laststamp)) -ge "$STALL" ]; then
-    echo "[qemu] 映像套用完成（$((sz/1024/1024))MB，停滯 ${STALL}s）"; break
+    echo "[qemu] 映像套用完成（size 停滯後備偵測，$((sz/1048576))MB）"; break
   fi
-  if ! ps -p "$QEMU_PID" >/dev/null 2>&1; then echo "[qemu] Phase A qemu 提早結束"; break; fi
   [ $((now - t0)) -ge "$MAXA" ] && { echo "[qemu] Phase A 逾時"; stop_qemu; exit 1; }
 done
 stop_qemu
+sz=$(stat -f %z "$QCOW" 2>/dev/null || echo 0)
+[ "$sz" -gt "$MIN_APPLIED" ] || { echo "[qemu] Phase A 未套到映像（qcow2 僅 $((sz/1048576))MB）"; exit 1; }
 
 # ---- BCD patch：離線補 ESP BCD 的 testsigning（用 Colima 容器）----
 echo "[bcd] === 離線補 ESP BCD testsigning ==="
